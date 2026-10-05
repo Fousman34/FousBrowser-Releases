@@ -178,6 +178,100 @@ impl From<serde_json::Error> for UpdateError {
     }
 }
 
+/// Владелец репозитория с релизами движка.
+pub const GITHUB_OWNER: &str = "Fousman34";
+
+/// Репозиторий, в котором лежат релизы движка и самого лаунчера.
+pub const GITHUB_REPO: &str = "FousBrowser-Releases";
+
+/// Переменная окружения для подмены адреса списка релизов.
+///
+/// Нужна зеркалам и проверкам: позволяет указать свой источник релизов
+/// движка, не меняя сборку.
+pub const RELEASES_URL_ENV: &str = "FOUSBROWSER_RELEASES_URL";
+
+/// Адрес списка релизов GitHub.
+pub fn releases_url() -> String {
+    match std::env::var(RELEASES_URL_ENV) {
+        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+        _ => format!(
+            "https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=20"
+        ),
+    }
+}
+
+/// Проверяет обновление для канала целиком: запрос источника и решение.
+pub fn check(channel: Channel) -> UpdateResult<Option<Release>> {
+    let platform = Platform::current()
+        .ok_or_else(|| UpdateError::Source("для этой системы движки не выпускаются".into()))?;
+    let browsers = crate::paths::browsers_dir()?;
+    let current = installed_version(&browsers, channel)?;
+
+    match channel {
+        Channel::Normal => {
+            let manifest = download::fetch_text(channel::NORMAL_MANIFEST_URL)?;
+            decide(channel, platform, current.as_deref(), Some(&manifest), None)
+        }
+        Channel::Antidetect => {
+            let releases = download::fetch_text(&releases_url())?;
+            decide(channel, platform, current.as_deref(), None, Some(&releases))
+        }
+    }
+}
+
+/// Ставит указанную версию канала.
+///
+/// Версия берётся из ответа источника заново: адреса загрузки никогда не
+/// приходят из интерфейса, иначе подмена ссылки в окне превращалась бы
+/// в загрузку произвольного файла.
+pub fn install_version(
+    channel: Channel,
+    version: &str,
+    mut on_progress: impl FnMut(download::Progress),
+    mut on_log: impl FnMut(&str),
+) -> UpdateResult<PathBuf> {
+    let platform = Platform::current()
+        .ok_or_else(|| UpdateError::Source("для этой системы движки не выпускаются".into()))?;
+    let browsers = crate::paths::browsers_dir()?;
+
+    // Проверяем без учёта установленной версии: нужна именно запрошенная.
+    let release = match channel {
+        Channel::Normal => {
+            let manifest = download::fetch_text(channel::NORMAL_MANIFEST_URL)?;
+            channel::normal_release(&manifest, platform, None)?
+        }
+        Channel::Antidetect => {
+            let releases = download::fetch_text(&releases_url())?;
+            channel::antidetect_release(&releases, platform, None)?
+        }
+    }
+    .ok_or_else(|| UpdateError::Source(format!("в источнике нет версии {version}")))?;
+
+    if release.version != version {
+        return Err(UpdateError::Source(format!(
+            "источник предлагает версию {}, а запрошена {version}",
+            release.version
+        )));
+    }
+
+    let prepared = install::prepare(
+        &release,
+        &browsers,
+        platform,
+        |progress| on_progress(progress),
+        |line| on_log(line),
+    )?;
+    on_log(prepared.verification_note());
+
+    install::install(&prepared, &browsers, platform, |line| on_log(line))
+}
+
+/// Установленная версия движка по каналу.
+pub fn current_version(channel: Channel) -> UpdateResult<Option<String>> {
+    let browsers = crate::paths::browsers_dir()?;
+    installed_version(&browsers, channel)
+}
+
 /// Проверяет обновления для указанного канала.
 ///
 /// `normal_manifest` и `github_releases` — уже полученные тексты ответов:

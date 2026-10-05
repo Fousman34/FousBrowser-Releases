@@ -286,6 +286,80 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(value < 10 ? 1 : 0).replace('.', ',')} ${units[unit]}`;
 }
 
+// --- обновления движков ------------------------------------------------------
+
+export type UpdateChannel = 'normal' | 'antidetect';
+
+/** Найденное обновление. */
+export interface Release {
+  channel: UpdateChannel;
+  version: string;
+  notes: string;
+  asset_name: string;
+  asset_url: string;
+  size: number | null;
+  sha256: string | null;
+  sums_url: string | null;
+  signature_url: string | null;
+  page_url: string;
+}
+
+/** Состояние одного канала. */
+export interface UpdateStateRow {
+  channel: UpdateChannel;
+  label: string;
+  installed: string | null;
+  candidate: Release | null;
+}
+
+export interface UpdateProgressEvent {
+  channel: UpdateChannel;
+  version: string;
+  received: number;
+  total: number | null;
+  percent: number | null;
+}
+
+export interface UpdateLogEvent {
+  channel: UpdateChannel;
+  line: string;
+}
+
+export interface UpdateDoneEvent {
+  channel: UpdateChannel;
+  version: string;
+  executable: string;
+}
+
+export interface UpdateErrorEvent {
+  channel: UpdateChannel;
+  message: string;
+}
+
+export function updateState(): Promise<UpdateStateRow[]> {
+  return invoke('update_state');
+}
+
+/** Проверяет обновление в канале. Возвращает `null`, если обновления нет. */
+export function updateCheck(channel: UpdateChannel): Promise<Release | null> {
+  return invoke('update_check', { channel });
+}
+
+/** Ставит обновление. Прогресс и журнал приходят событиями. */
+export function updateInstall(channel: UpdateChannel, version: string): Promise<void> {
+  return invoke('update_install', { channel, version });
+}
+
+/** Перезапускает лаунчер. */
+export function appRestart(): Promise<void> {
+  return invoke('app_restart');
+}
+
+export const UPDATE_CHANNEL_HINTS: Record<UpdateChannel, string> = {
+  normal: 'стоковый Chromium из официального канала',
+  antidetect: 'наш форк с подменой отпечатка: релизы GitHub с обязательной GPG-подписью'
+};
+
 /**
  * Приводит любое исключение к `CommandError`.
  *

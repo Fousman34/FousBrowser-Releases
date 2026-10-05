@@ -1008,3 +1008,169 @@ pub fn reap_and_finalize(app: &AppHandle) {
         }
     }
 }
+
+// --- обновления движков -----------------------------------------------------
+
+use crate::updater::{self, Channel, Release};
+
+/// Событие с процентом загрузки: `update://progress`.
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateProgressEvent {
+    pub channel: String,
+    pub version: String,
+    pub received: u64,
+    pub total: Option<u64>,
+    pub percent: Option<f64>,
+}
+
+/// Строка журнала обновления: `update://log`.
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateLogEvent {
+    pub channel: String,
+    pub line: String,
+}
+
+/// Обновление завершено: `update://done`.
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateDoneEvent {
+    pub channel: String,
+    pub version: String,
+    /// Путь к установленному движку.
+    pub executable: String,
+}
+
+/// Обновление не удалось: `update://error`.
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateErrorEvent {
+    pub channel: String,
+    pub message: String,
+}
+
+/// Состояние канала обновлений для интерфейса.
+#[derive(Debug, Serialize)]
+pub struct UpdateState {
+    pub channel: String,
+    pub label: String,
+    pub installed: Option<String>,
+    /// Найденное обновление, если проверка уже выполнялась.
+    pub candidate: Option<Release>,
+}
+
+fn parse_channel(value: &str) -> CommandResult<Channel> {
+    match value.to_ascii_lowercase().as_str() {
+        "normal" => Ok(Channel::Normal),
+        "antidetect" => Ok(Channel::Antidetect),
+        other => Err(CommandError::new(
+            "invalid",
+            format!("неизвестный канал обновлений: {other}"),
+        )),
+    }
+}
+
+fn update_error(error: updater::UpdateError) -> CommandError {
+    let kind = match &error {
+        updater::UpdateError::Network(_) => "update_network",
+        updater::UpdateError::Source(_) => "update_source",
+        updater::UpdateError::Insecure(_) => "update_insecure",
+        updater::UpdateError::Io(_) => "io",
+        updater::UpdateError::Vault(_) => "vault",
+    };
+    CommandError::new(kind, error.to_string())
+}
+
+/// Состояние обоих каналов: что установлено сейчас.
+#[tauri::command]
+pub async fn update_state() -> CommandResult<Vec<UpdateState>> {
+    let mut result = Vec::new();
+    for channel in [Channel::Normal, Channel::Antidetect] {
+        let installed = updater::current_version(channel).map_err(update_error)?;
+        result.push(UpdateState {
+            channel: channel.dir_name().to_string(),
+            label: channel.label().to_string(),
+            installed,
+            candidate: None,
+        });
+    }
+    Ok(result)
+}
+
+/// Проверяет обновление в указанном канале.
+#[tauri::command]
+pub async fn update_check(channel: String) -> CommandResult<Option<Release>> {
+    let channel = parse_channel(&channel)?;
+    updater::check(channel).map_err(update_error)
+}
+
+/// Ставит обновление: загрузка, проверка подлинности, распаковка, установка.
+///
+/// Работа идёт в отдельном потоке: загрузка и проверка подписи занимают
+/// время, а интерфейс должен показывать прогресс, а не ждать.
+#[tauri::command]
+pub async fn update_install(channel: String, version: String, app: AppHandle) -> CommandResult<()> {
+    let channel = parse_channel(&channel)?;
+    let name = channel.dir_name().to_string();
+    let app_handle = app.clone();
+
+    std::thread::spawn(move || {
+        let emit_log = |line: &str| {
+            let _ = app_handle.emit(
+                "update://log",
+                UpdateLogEvent {
+                    channel: name.clone(),
+                    line: line.to_string(),
+                },
+            );
+        };
+
+        let result = updater::install_version(
+            channel,
+            &version,
+            |progress| {
+                let _ = app_handle.emit(
+                    "update://progress",
+                    UpdateProgressEvent {
+                        channel: name.clone(),
+                        version: version.clone(),
+                        received: progress.received,
+                        total: progress.total,
+                        percent: progress.percent(),
+                    },
+                );
+            },
+            emit_log,
+        );
+
+        match result {
+            Ok(executable) => {
+                let _ = app_handle.emit(
+                    "update://done",
+                    UpdateDoneEvent {
+                        channel: name,
+                        version,
+                        executable: executable.to_string_lossy().to_string(),
+                    },
+                );
+            }
+            Err(error) => {
+                // Строка об ошибке тоже идёт в терминал: человек видит, на
+                // каком шаге всё остановилось.
+                emit_log(&format!("ошибка: {error}"));
+                let _ = app_handle.emit(
+                    "update://error",
+                    UpdateErrorEvent {
+                        channel: name,
+                        message: error.to_string(),
+                    },
+                );
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Перезапускает лаунчер (кнопка «Перезапустить» после обновления).
+#[tauri::command]
+pub async fn app_restart(app: AppHandle) -> CommandResult<()> {
+    app.restart();
+}

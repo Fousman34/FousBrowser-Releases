@@ -4,6 +4,7 @@
   import TerminalText from '$lib/components/TerminalText.svelte';
   import TypedHint from '$lib/components/TypedHint.svelte';
   import ProfileForm from '$lib/components/ProfileForm.svelte';
+  import UpdatePanel from '$lib/components/UpdatePanel.svelte';
   import * as api from '$lib/api';
 
   type Phase = 'boot' | 'welcome' | 'unlock' | 'ready';
@@ -49,6 +50,8 @@
   let stopAllBusy = $state(false);
   /** Отчёт последней остановки всех профилей. */
   let stopReport = $state<api.StopAllReport | null>(null);
+  /** Открыта ли панель обновлений. */
+  let showUpdates = $state(false);
   let unlisten: (() => void) | undefined;
 
   const MIN = api.MIN_PASSWORD_LENGTH;
@@ -797,9 +800,18 @@
 
         <footer class="actions tail">
           <button onclick={lockVault}>заблокировать хранилище</button>
+          <button class="ghost" onclick={() => (showUpdates = !showUpdates)} disabled={working !== ''}>
+            {showUpdates ? 'скрыть обновления' : 'обновления движков'}
+          </button>
           <span class="spacer"></span>
           <span class="faint tiny">{outcome?.vault_id.slice(0, 8) ?? ''}</span>
         </footer>
+
+        {#if showUpdates}
+          <div class="panel-slot">
+            <UpdatePanel onclose={() => (showUpdates = false)} />
+          </div>
+        {/if}
 
         {#if outcome && outcome.warnings.length > 0}
           <div class="warn-block">

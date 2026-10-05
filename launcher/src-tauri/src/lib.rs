@@ -69,6 +69,10 @@ pub fn run() {
             commands::profile_launch,
             commands::profile_stop,
             commands::profile_stop_all,
+            commands::update_state,
+            commands::update_check,
+            commands::update_install,
+            commands::app_restart,
         ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить FousBrowser");
