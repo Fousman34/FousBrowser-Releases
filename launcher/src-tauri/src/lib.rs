@@ -52,6 +52,7 @@ pub fn run() {
             commands::vault_unlock,
             commands::vault_lock,
             commands::vault_confirm_continue,
+            commands::vault_recover,
             commands::vault_attempts,
             commands::vault_save_metadata,
             commands::profile_list,

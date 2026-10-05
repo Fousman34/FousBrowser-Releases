@@ -27,6 +27,8 @@ pub mod branding;
 pub mod discovery;
 pub mod flags;
 pub mod journal;
+pub mod process;
+pub mod recovery;
 pub mod startpage;
 
 use std::collections::HashMap;
@@ -56,6 +58,7 @@ struct RunningInstance {
     pid: u32,
     temp_dir: PathBuf,
     engine_version: String,
+    engine_program: String,
     started_unix: u64,
     child: Child,
     /// Описатель главного окна: через него окно закрывается вежливо.
@@ -75,6 +78,7 @@ impl RunningInstance {
             engine_version: self.engine_version.clone(),
             started_unix: self.started_unix,
             temp_dir: self.temp_dir.to_string_lossy().to_string(),
+            engine_program: self.engine_program.clone(),
         }
     }
 }
@@ -93,6 +97,9 @@ pub struct RunningView {
     pub engine_version: String,
     pub started_unix: u64,
     pub temp_dir: String,
+    /// Путь к исполняемому файлу движка: по нему восстановление после краха
+    /// отличает свой процесс от чужого с тем же номером.
+    pub engine_program: String,
 }
 
 impl RunningView {
@@ -105,6 +112,7 @@ impl RunningView {
             state: state.to_string(),
             engine_version: self.engine_version.clone(),
             started_unix: self.started_unix,
+            engine_program: self.engine_program.clone(),
         }
     }
 }
@@ -138,6 +146,7 @@ impl EngineManager {
             pid: child.id(),
             temp_dir,
             engine_version: engine.version.clone(),
+            engine_program: engine.program.to_string_lossy().to_string(),
             started_unix: crate::vault::unix_now(),
             child,
             window: Arc::clone(&window),
@@ -399,7 +408,7 @@ fn graceful_close(pid: u32, window: isize) -> Result<()> {
 }
 
 /// Принудительное завершение дерева процессов.
-fn force_kill(pid: u32) -> Result<()> {
+pub(crate) fn force_kill(pid: u32) -> Result<()> {
     #[cfg(windows)]
     {
         let status = Command::new("taskkill")

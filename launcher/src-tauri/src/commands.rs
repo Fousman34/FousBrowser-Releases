@@ -150,6 +150,8 @@ pub struct UnlockOutcome {
     pub profiles: usize,
     /// Предупреждения для показа пользователю.
     pub warnings: Vec<String>,
+    /// Что удалось разобрать после аварийного завершения.
+    pub recovery: RecoveryReport,
 }
 
 /// Собирает состояние хранилища. Общая реализация для двух команд,
@@ -210,6 +212,8 @@ pub async fn vault_create(
                 .to_string(),
             "Сохраните пароль в менеджере паролей.".to_string(),
         ],
+        // Новое хранилище: разбирать нечего.
+        recovery: RecoveryReport::default(),
     };
     state.replace(Some(unlocked));
     Ok(outcome)
@@ -223,9 +227,25 @@ pub async fn vault_unlock(
 ) -> CommandResult<UnlockOutcome> {
     let dir = paths::vault_dir()?;
     let vault = Vault::open(&dir)?;
-    let unlocked = vault.unlock(&password)?;
+    let mut unlocked = vault.unlock(&password)?;
+
+    // Разбор последствий сбоя: расшифрованные копии, оставшиеся от прошлого
+    // запуска, возвращаются в контейнеры (или удаляются — по настройке).
+    // Делается сразу после разблокировки, потому что раньше ключа ещё нет.
+    let recovery = match crate::engine::recovery::recover(&mut unlocked) {
+        Ok(report) => report,
+        Err(error) => {
+            let mut report = RecoveryReport::default();
+            report.failed.push(crate::engine::recovery::Failure {
+                profile_id: "хранилище".to_string(),
+                message: crate::engine::recovery::describe(&error),
+            });
+            report
+        }
+    };
 
     let mut warnings = Vec::new();
+    warnings.extend(recovery.notes());
     if unlocked.metadata().settings.remind_backup {
         warnings.push(
             "Резервной копии хранилища нет. Пароль восстановить нельзя — сделайте экспорт."
@@ -237,9 +257,16 @@ pub async fn vault_unlock(
         vault_id: unlocked.vault_id().to_string(),
         profiles: unlocked.metadata().profile_count(),
         warnings,
+        recovery,
     };
     state.replace(Some(unlocked));
     Ok(outcome)
+}
+
+/// Повторяет разбор последствий сбоя по требованию.
+#[tauri::command]
+pub async fn vault_recover(state: State<'_, VaultState>) -> CommandResult<RecoveryReport> {
+    with_vault_mut(&state, |vault| Ok(crate::engine::recovery::recover(vault)?))
 }
 
 /// Блокирует хранилище: мастер-ключ затирается в памяти.
@@ -520,6 +547,7 @@ pub async fn profile_delete(
 use crate::engine::discovery::{self, Engine};
 use crate::engine::flags;
 use crate::engine::journal::{Journal, STATE_RUNNING, STATE_SEALING};
+use crate::engine::recovery::RecoveryReport;
 use crate::engine::{EngineManager, RunningView, GRACEFUL_TIMEOUT};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -663,7 +691,15 @@ fn seal_back(state: &VaultState, profile_id: &str) -> CommandResult<()> {
         match vault.plaintext_state(profile_id)? {
             crate::vault::PlaintextState::Absent => Ok(()),
             crate::vault::PlaintextState::Present { .. } => {
-                vault.seal_profile(profile_id, &temp)?;
+                let stats = vault.seal_profile(profile_id, &temp)?;
+                if stats.vanished > 0 {
+                    // Служебные файлы браузера исчезают сами: это не потеря
+                    // данных пользователя, но полезно видеть в журнале.
+                    eprintln!(
+                        "профиль {profile_id}: во время шифрования исчезло файлов: {}",
+                        stats.vanished
+                    );
+                }
                 vault.discard_plaintext(profile_id)?;
                 Ok(())
             }

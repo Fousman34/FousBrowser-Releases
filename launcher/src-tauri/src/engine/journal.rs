@@ -37,6 +37,16 @@ pub struct Entry {
     pub state: String,
     pub engine_version: String,
     pub started_unix: u64,
+    /// Путь к исполняемому файлу движка.
+    ///
+    /// Нужен восстановлению после краха: завершать процесс можно только
+    /// убедившись, что это тот самый движок. Номера процессов
+    /// переиспользуются, поэтому одного `pid` недостаточно.
+    ///
+    /// Поле появилось позже первой версии формата, поэтому у старых записей
+    /// его может не быть — тогда восстановление процесс не трогает.
+    #[serde(default)]
+    pub engine_program: String,
 }
 
 /// Журнал целиком.
@@ -131,6 +141,7 @@ mod tests {
             state: state.to_string(),
             engine_version: "1.0.0".to_string(),
             started_unix: 1_700_000_000,
+            engine_program: "C:/browsers/FousBrowser.exe".to_string(),
         }
     }
 
@@ -208,6 +219,7 @@ mod tests {
             state: STATE_RUNNING.to_string(),
             engine_version: "1.2.3".to_string(),
             started_unix: 1,
+            engine_program: "C:/browsers/FousBrowser.exe".to_string(),
         });
         let text = serde_json::to_string(&journal).unwrap();
         for forbidden in ["password", "proxy", "seed", "master", "token"] {

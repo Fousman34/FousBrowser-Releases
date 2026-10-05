@@ -101,6 +101,12 @@ pub struct ContainerStats {
     pub entries: usize,
     /// Сколько байт открытого текста.
     pub bytes: u64,
+    /// Сколько файлов исчезло прямо во время шифрования.
+    ///
+    /// Браузер постоянно создаёт и удаляет служебные файлы, поэтому гонка
+    /// при сборке контейнера — обычное дело: пропущенный файл к этому моменту
+    /// уже удалён, и сохранять его содержимое не требуется.
+    pub vanished: usize,
 }
 
 /// Итог проверки каталога на осиротевшие данные.
@@ -223,18 +229,55 @@ fn measure(root: &Path) -> Result<(usize, u64)> {
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
+        let listing = match fs::read_dir(&dir) {
+            Ok(listing) => listing,
+            Err(error) if vanished(&error) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        for entry in listing {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) if vanished(&error) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) if vanished(&error) => continue,
+                Err(error) => return Err(error.into()),
+            };
             if file_type.is_dir() {
                 stack.push(entry.path());
             } else if file_type.is_file() {
-                entries += 1;
-                bytes += entry.metadata()?.len();
+                // Размер тоже может исчезнуть вместе с файлом: подсчёт
+                // не должен падать из-за служебных файлов браузера.
+                match entry.metadata() {
+                    Ok(metadata) => {
+                        entries += 1;
+                        bytes += metadata.len();
+                    }
+                    Err(error) if vanished(&error) => continue,
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
     }
     Ok((entries, bytes))
+}
+
+/// Исчез ли файл или каталог прямо во время работы.
+///
+/// Браузер постоянно удаляет служебные файлы (метрики, кэш, временные
+/// загрузки), поэтому «файл не найден» при сборке контейнера — не ошибка
+/// данных: этого файла уже нет и сохранять нечего.
+fn vanished(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound
+}
+
+/// То же для ошибки хранилища: нужно, чтобы отличать исчезнувший файл
+/// от заблокированного (второй обязан остановить шифрование, иначе данные
+/// будут потеряны).
+fn is_vanished(error: &VaultError) -> bool {
+    matches!(error, VaultError::Io(io) if vanished(io))
 }
 
 /// Собирает контейнер: обходит `source` и шифрует каждый файл.
@@ -248,8 +291,18 @@ fn write_container(
     let mut stack = vec![(source.to_path_buf(), String::new())];
 
     while let Some((dir, prefix)) = stack.pop() {
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
+        let listing = match fs::read_dir(&dir) {
+            Ok(listing) => listing,
+            Err(error) if vanished(&error) => continue,
+            Err(error) => return Err(error.into()),
+        };
+
+        for entry in listing {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) if vanished(&error) => continue,
+                Err(error) => return Err(error.into()),
+            };
             let name = entry.file_name().to_string_lossy().to_string();
             let relative = if prefix.is_empty() {
                 name
@@ -259,7 +312,11 @@ fn write_container(
             validate_relative(&relative)?;
 
             let path = entry.path();
-            let file_type = entry.file_type()?;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) if vanished(&error) => continue,
+                Err(error) => return Err(error.into()),
+            };
             let destination = staging.join(&relative);
 
             if file_type.is_dir() {
@@ -269,7 +326,14 @@ fn write_container(
             }
 
             if file_type.is_symlink() {
-                let target = fs::read_link(&path)?;
+                let target = match fs::read_link(&path) {
+                    Ok(target) => target,
+                    Err(error) if vanished(&error) => {
+                        stats.vanished += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 let payload = target.to_string_lossy().into_owned().into_bytes();
                 if let Some(parent) = destination.parent() {
                     paths::ensure_dir(parent)?;
@@ -296,9 +360,17 @@ fn write_container(
             if let Some(parent) = destination.parent() {
                 paths::ensure_dir(parent)?;
             }
-            let written = store_file(key, profile_aad, &relative, &path, &destination)?;
-            stats.entries += 1;
-            stats.bytes += written;
+            match store_file(key, profile_aad, &relative, &path, &destination) {
+                Ok(written) => {
+                    stats.entries += 1;
+                    stats.bytes += written;
+                }
+                // Файл исчез между обходом и чтением — сохранять нечего.
+                Err(error) if is_vanished(&error) => stats.vanished += 1,
+                // Всё остальное (например, файл занят другим процессом)
+                // обязано остановить сборку: иначе данные потеряются молча.
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -1028,6 +1100,20 @@ mod tests {
             vault.seal_profile(unknown, tmp.path()),
             Err(VaultError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn vanished_files_are_distinguished_from_locked_ones() {
+        // Исчезнувший файл можно пропустить, заблокированный — нельзя:
+        // во втором случае данные ещё существуют и должны попасть в контейнер.
+        let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "нет файла");
+        assert!(vanished(&missing));
+        assert!(is_vanished(&VaultError::Io(missing)));
+
+        let locked = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "занят");
+        assert!(!vanished(&locked));
+        assert!(!is_vanished(&VaultError::Io(locked)));
+        assert!(!is_vanished(&VaultError::Invalid("иное".into())));
     }
 
     #[test]

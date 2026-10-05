@@ -324,42 +324,8 @@ mod windows {
     /// движок называет себя сам. Это работает и с локализованными сборками,
     /// где название записано не латиницей.
     fn engine_product_name(pid: u32) -> Option<String> {
-        let executable = process_path(pid)?;
+        let executable = crate::engine::process::executable_of(pid)?;
         product_name(&executable)
-    }
-
-    /// Путь к исполняемому файлу процесса.
-    fn process_path(pid: u32) -> Option<std::path::PathBuf> {
-        use std::ffi::c_void;
-
-        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
-            fn QueryFullProcessImageNameW(
-                process: *mut c_void,
-                flags: u32,
-                buffer: *mut u16,
-                size: *mut u32,
-            ) -> i32;
-            fn CloseHandle(handle: *mut c_void) -> i32;
-        }
-
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if handle.is_null() {
-            return None;
-        }
-
-        let mut buffer = vec![0u16; 1024];
-        let mut size = buffer.len() as u32;
-        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size) };
-        unsafe { CloseHandle(handle) };
-        if ok == 0 {
-            return None;
-        }
-        buffer.truncate(size as usize);
-        Some(std::path::PathBuf::from(String::from_utf16_lossy(&buffer)))
     }
 
     /// Читает `ProductName` из таблицы версии файла.
