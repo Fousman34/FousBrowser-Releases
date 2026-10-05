@@ -254,16 +254,10 @@ pub fn install_version(
         )));
     }
 
-    let prepared = install::prepare(
-        &release,
-        &browsers,
-        platform,
-        |progress| on_progress(progress),
-        |line| on_log(line),
-    )?;
+    let prepared = install::prepare(&release, &browsers, platform, &mut on_progress, &mut on_log)?;
     on_log(prepared.verification_note());
 
-    install::install(&prepared, &browsers, platform, |line| on_log(line))
+    install::install(&prepared, &browsers, platform, &mut on_log)
 }
 
 /// Установленная версия движка по каналу.
