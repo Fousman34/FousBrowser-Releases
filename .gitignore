@@ -1,0 +1,46 @@
+# ===== Rust / Tauri =====
+target/
+**/target/
+*.rs.bk
+*.pdb
+
+# ===== Node / фронтенд =====
+node_modules/
+launcher/dist/
+launcher/.svelte-kit/
+launcher/build/
+npm-debug.log*
+pnpm-debug.log*
+package-lock.json.bak
+
+# ===== Скачанные движки браузеров (не в git, ставятся извне) =====
+browsers/*
+!browsers/.gitkeep
+
+# ===== Зашифрованные профили пользователей — НИКОГДА в git =====
+profiles/*
+!profiles/.gitkeep
+
+# ===== Секреты и ключи =====
+.env
+.env.local
+*.pem
+*.pfx
+*.p12
+*.key
+*.jks
+!launcher/resources/keys/*.asc
+
+# ===== Локальные артефакты сборки установщиков =====
+launcher/src-tauri/target/release/bundle/
+dist/
+*.log
+
+# ===== ОС / IDE =====
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
