@@ -27,9 +27,6 @@ use std::path::Path;
 
 use crate::vault::metadata::{ProfileKind, ProfileMeta, ProxyConfig, ProxyScheme};
 
-/// Имя класса окна (и связанное с ним представление профиля в системе).
-pub const WINDOW_CLASS: &str = "FousBrowser";
-
 /// Заголовок окна профиля: единственное имя, которое должен видеть человек.
 pub fn window_title(profile_name: &str) -> String {
     format!("FousBrowser — {profile_name}")
@@ -80,11 +77,6 @@ pub fn build(
 
     let mut args = vec![
         format!("--user-data-dir={user_data_dir}"),
-        // Имя окна в системе — тоже часть оформления: в списке окон и на
-        // панели задач профиль должен выглядеть как FousBrowser, а не как
-        // чужой браузер. На Windows этот флаг игнорируется (там окно
-        // оформляет сам лаунчер, см. `engine::branding`).
-        format!("--class={WINDOW_CLASS}"),
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--no-service-autorun".to_string(),
@@ -311,10 +303,6 @@ mod tests {
             Path::new("/tmp/p"),
             None,
             None,
-        );
-        assert!(
-            plan.args.iter().any(|arg| arg == "--class=FousBrowser"),
-            "имя окна задаётся классом FousBrowser"
         );
         assert_eq!(window_title("Рабочий"), "FousBrowser — Рабочий");
         for arg in &plan.args {

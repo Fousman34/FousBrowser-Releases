@@ -70,7 +70,10 @@ mod tests {
     fn segments_ignore_prefixes_and_separators() {
         assert_eq!(segments("121.0.6167.85"), vec![121, 0, 6167, 85]);
         assert_eq!(segments("v121.0.6167.85"), vec![121, 0, 6167, 85]);
-        assert_eq!(segments("antidetect-v121.0.6167.85"), vec![121, 0, 6167, 85]);
+        assert_eq!(
+            segments("antidetect-v121.0.6167.85"),
+            vec![121, 0, 6167, 85]
+        );
         assert_eq!(segments(""), Vec::<u64>::new());
         assert_eq!(segments("нет цифр"), Vec::<u64>::new());
     }

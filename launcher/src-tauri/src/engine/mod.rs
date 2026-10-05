@@ -334,14 +334,6 @@ fn spawn(engine: &Engine, plan: &LaunchPlan) -> Result<Child> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    // Отдельная группа процессов: при остановке сигнал уходит всему дереву,
-    // а не только главному процессу.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-
     command
         .spawn()
         .map_err(|error| VaultError::EngineFailed(format!("{}: {error}", engine.program.display())))
@@ -349,97 +341,47 @@ fn spawn(engine: &Engine, plan: &LaunchPlan) -> Result<Child> {
 
 /// Вежливая просьба закрыться.
 ///
-/// На Windows `taskkill` без `/F` окно **не** закрывает: движок на такой
-/// сигнал не реагирует (проверено на живом процессе). Поэтому основное
-/// действие — `WM_CLOSE` главному окну, то есть ровно то, что делает
-/// пользователь, нажимая крестик. Дерево процессов при этом тоже получает
-/// вежливый сигнал: так закрываются уже готовые к выходу вспомогательные
-/// процессы движка.
+/// `taskkill` без `/F` окно **не** закрывает: движок на такой сигнал не
+/// реагирует (проверено на живом процессе). Поэтому основное действие —
+/// `WM_CLOSE` главному окну, то есть ровно то, что делает пользователь,
+/// нажимая крестик. Дерево процессов при этом тоже получает вежливый
+/// сигнал: так закрываются уже готовые к выходу вспомогательные процессы
+/// движка.
 fn graceful_close(pid: u32, window: isize) -> Result<()> {
-    #[cfg(windows)]
-    {
-        let mut asked = false;
-        if window != 0 && branding::close_window(window) {
-            asked = true;
-        }
-
-        let status = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        if asked {
-            return Ok(());
-        }
-        match status {
-            Ok(_) => Ok(()),
-            Err(error) => Err(VaultError::EngineFailed(format!(
-                "не удалось попросить процесс {pid} закрыться: {error}"
-            ))),
-        }
+    let mut asked = false;
+    if window != 0 && branding::close_window(window) {
+        asked = true;
     }
 
-    #[cfg(not(windows))]
-    {
-        let _ = window;
-        // Отрицательный идентификатор — вся группа процессов.
-        let group = format!("-{pid}");
-        let status = Command::new("kill")
-            .args(["-TERM", &group])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if matches!(status, Ok(code) if code.success()) {
-            return Ok(());
-        }
-        let status = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        match status {
-            Ok(_) => Ok(()),
-            Err(error) => Err(VaultError::EngineFailed(format!(
-                "не удалось попросить процесс {pid} закрыться: {error}"
-            ))),
-        }
+    let status = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    if asked {
+        return Ok(());
+    }
+    match status {
+        Ok(_) => Ok(()),
+        Err(error) => Err(VaultError::EngineFailed(format!(
+            "не удалось попросить процесс {pid} закрыться: {error}"
+        ))),
     }
 }
 
 /// Принудительное завершение дерева процессов.
 pub(crate) fn force_kill(pid: u32) -> Result<()> {
-    #[cfg(windows)]
-    {
-        let status = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        match status {
-            Ok(_) => Ok(()),
-            Err(error) => Err(VaultError::EngineFailed(format!(
-                "не удалось завершить процесс {pid}: {error}"
-            ))),
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        let group = format!("-{pid}");
-        let status = Command::new("kill").args(["-KILL", &group]).status();
-        if matches!(status, Ok(code) if code.success()) {
-            return Ok(());
-        }
-        let status = Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
-            .status();
-        match status {
-            Ok(_) => Ok(()),
-            Err(error) => Err(VaultError::EngineFailed(format!(
-                "не удалось завершить процесс {pid}: {error}"
-            ))),
-        }
+    let status = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match status {
+        Ok(_) => Ok(()),
+        Err(error) => Err(VaultError::EngineFailed(format!(
+            "не удалось завершить процесс {pid}: {error}"
+        ))),
     }
 }
 
@@ -450,13 +392,10 @@ mod tests {
 
     /// Долгоживущая команда для проверки жизненного цикла.
     fn sleeper(kind: ProfileKind) -> (Engine, LaunchPlan) {
-        #[cfg(windows)]
         let (program, args) = (
             "cmd".to_string(),
             vec!["/C".to_string(), "ping -n 60 127.0.0.1 > NUL".to_string()],
         );
-        #[cfg(not(windows))]
-        let (program, args) = ("sleep".to_string(), vec!["60".to_string()]);
 
         let engine = Engine {
             kind,
@@ -474,13 +413,10 @@ mod tests {
 
     /// Короткоживущая команда: завершается сама.
     fn quick() -> (Engine, LaunchPlan) {
-        #[cfg(windows)]
         let (program, args) = (
             "cmd".to_string(),
             vec!["/C".to_string(), "exit 0".to_string()],
         );
-        #[cfg(not(windows))]
-        let (program, args) = ("true".to_string(), Vec::<String>::new());
 
         let engine = Engine {
             kind: ProfileKind::Normal,

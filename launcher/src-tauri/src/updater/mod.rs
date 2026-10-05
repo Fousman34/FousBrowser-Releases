@@ -81,7 +81,6 @@ impl Channel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     WindowsX64,
-    LinuxX64,
 }
 
 impl Platform {
@@ -91,14 +90,7 @@ impl Platform {
         {
             Some(Platform::WindowsX64)
         }
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        {
-            Some(Platform::LinuxX64)
-        }
-        #[cfg(not(any(
-            all(windows, target_arch = "x86_64"),
-            all(target_os = "linux", target_arch = "x86_64")
-        )))]
+        #[cfg(not(all(windows, target_arch = "x86_64")))]
         {
             None
         }
@@ -108,7 +100,6 @@ impl Platform {
     pub fn chrome_for_testing(&self) -> &'static str {
         match self {
             Platform::WindowsX64 => "win64",
-            Platform::LinuxX64 => "linux64",
         }
     }
 
@@ -116,7 +107,6 @@ impl Platform {
     pub fn archive_hints(&self) -> &'static [&'static str] {
         match self {
             Platform::WindowsX64 => &["win64", "windows", "win-x64", "win_x64"],
-            Platform::LinuxX64 => &["linux64", "linux-x64", "linux_x64", "linux"],
         }
     }
 
@@ -205,9 +195,8 @@ pub fn decide(
             channel::normal_release(manifest, platform, current)
         }
         Channel::Antidetect => {
-            let releases = github_releases.ok_or_else(|| {
-                UpdateError::Source("не передан список релизов GitHub".into())
-            })?;
+            let releases = github_releases
+                .ok_or_else(|| UpdateError::Source("не передан список релизов GitHub".into()))?;
             channel::antidetect_release(releases, platform, current)
         }
     }
@@ -251,7 +240,10 @@ mod tests {
     fn channel_names_match_the_engine_layout() {
         // Совпадение с engine::discovery::dir_name — не случайность:
         // обновление и запуск обязаны смотреть в один каталог.
-        assert_eq!(Channel::Normal.dir_name(), crate::engine::discovery::dir_name(crate::vault::ProfileKind::Normal));
+        assert_eq!(
+            Channel::Normal.dir_name(),
+            crate::engine::discovery::dir_name(crate::vault::ProfileKind::Normal)
+        );
         assert_eq!(
             Channel::Antidetect.dir_name(),
             crate::engine::discovery::dir_name(crate::vault::ProfileKind::Antidetect)
@@ -261,16 +253,28 @@ mod tests {
     #[test]
     fn pointer_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(installed_version(tmp.path(), Channel::Normal).unwrap(), None);
-
-        write_pointer(tmp.path(), Channel::Normal, "121.0.6167.85", "chrome-win64/chrome.exe").unwrap();
         assert_eq!(
-            installed_version(tmp.path(), Channel::Normal).unwrap().as_deref(),
+            installed_version(tmp.path(), Channel::Normal).unwrap(),
+            None
+        );
+
+        write_pointer(
+            tmp.path(),
+            Channel::Normal,
+            "121.0.6167.85",
+            "chrome-win64/chrome.exe",
+        )
+        .unwrap();
+        assert_eq!(
+            installed_version(tmp.path(), Channel::Normal)
+                .unwrap()
+                .as_deref(),
             Some("121.0.6167.85")
         );
 
         // Указатель совпадает по раскладке с тем, что читает discovery.
-        let pointer = std::fs::read_to_string(tmp.path().join("normal").join(POINTER_FILE)).unwrap();
+        let pointer =
+            std::fs::read_to_string(tmp.path().join("normal").join(POINTER_FILE)).unwrap();
         let value: serde_json::Value = serde_json::from_str(&pointer).unwrap();
         assert_eq!(value["version"], "121.0.6167.85");
         assert_eq!(value["executable"], "chrome-win64/chrome.exe");

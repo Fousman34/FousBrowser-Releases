@@ -746,17 +746,11 @@ pub fn validate_relative(relative: &str) -> Result<()> {
     Ok(())
 }
 
-/// Создаёт символическую ссылку.
-#[cfg(unix)]
-fn write_symlink(target: &Path, destination: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(target, destination)?;
-    Ok(())
-}
-
-/// На Windows символические ссылки требуют особых прав, поэтому цель
+/// Восстанавливает запись-ссылку.
+///
+/// В Windows символические ссылки требуют особых прав, поэтому цель
 /// сохраняется как обычный файл: содержимое не теряется, а браузерные
 /// профили такими ссылками не пользуются.
-#[cfg(not(unix))]
 fn write_symlink(target: &Path, destination: &Path) -> Result<()> {
     let mut file = File::create(destination)?;
     file.write_all(target.to_string_lossy().as_bytes())?;
@@ -1140,33 +1134,7 @@ mod tests {
         // такие имена не появляются, поэтому путь отвергается.
         assert!(validate_relative("./a").is_err());
 
-        #[cfg(unix)]
-        assert!(validate_relative("/etc/passwd").is_err());
-        #[cfg(windows)]
-        {
-            assert!(validate_relative("C:/Windows/system32").is_err());
-            assert!(validate_relative("..\\escape").is_err());
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symlinks_are_preserved() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut vault = vault(tmp.path());
-        let id = make_profile(&mut vault);
-        let plain = vault.temp_profile_dir(&id);
-        paths::ensure_dir(&plain).unwrap();
-        std::os::unix::fs::symlink("target-file", plain.join("link")).unwrap();
-
-        vault.seal_profile(&id, &plain).unwrap();
-        let back = seal_round_trip(&vault, &id);
-
-        let meta = fs::symlink_metadata(back.join("link")).unwrap();
-        assert!(meta.file_type().is_symlink());
-        assert_eq!(
-            fs::read_link(back.join("link")).unwrap(),
-            Path::new("target-file")
-        );
+        assert!(validate_relative("C:/Windows/system32").is_err());
+        assert!(validate_relative("..\\escape").is_err());
     }
 }

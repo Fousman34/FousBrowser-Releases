@@ -15,19 +15,10 @@ use std::path::PathBuf;
 
 /// Путь к исполняемому файлу процесса.
 pub fn executable_of(pid: u32) -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        windows_executable(pid)
-    }
-    #[cfg(not(windows))]
-    {
-        // В Linux сведения о процессе лежат в /proc.
-        std::fs::read_link(format!("/proc/{pid}/exe")).ok()
-    }
+    windows_executable(pid)
 }
 
-/// Windows: `QueryFullProcessImageNameW` даёт полный путь процесса.
-#[cfg(windows)]
+/// `QueryFullProcessImageNameW` даёт полный путь процесса.
 fn windows_executable(pid: u32) -> Option<PathBuf> {
     use std::ffi::c_void;
 

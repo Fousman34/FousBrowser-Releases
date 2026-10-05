@@ -28,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi", "appimage", "deb"],
+    "targets": ["nsis", "msi"],
     "publisher": "Fousman34",
     "category": "Utility",
     "shortDescription": "FousBrowser launcher",
@@ -43,11 +43,6 @@
       "nsis": {
         "installMode": "currentUser",
         "languages": ["Russian", "English"]
-      }
-    },
-    "linux": {
-      "deb": {
-        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
       }
     },
     "createUpdaterArtifacts": false

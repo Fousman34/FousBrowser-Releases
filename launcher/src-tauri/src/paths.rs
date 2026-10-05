@@ -2,10 +2,8 @@
 //!
 //! ВАЖНО: данные пользователя НИКОГДА не пишутся в каталог установки.
 //!
-//! | ОС      | Каталог данных                        | Каталог настроек          |
-//! |---------|---------------------------------------|---------------------------|
-//! | Windows | `%APPDATA%\FousBrowser`               | тот же                    |
-//! | Linux   | `~/.local/share/FousBrowser`          | `~/.config/FousBrowser`   |
+//! Поддерживается только Windows: данные и настройки лежат в
+//! `%APPDATA%\FousBrowser`.
 //!
 //! Переменная окружения `FOUSBROWSER_HOME` переопределяет каталог данных
 //! целиком — используется тестами и портативным режимом.
@@ -36,25 +34,12 @@ pub fn app_root() -> io::Result<PathBuf> {
     Ok(base.data_dir().join(APP_DIR_NAME))
 }
 
-/// Каталог настроек (на Windows совпадает с каталогом данных).
+/// Каталог настроек. В Windows он совпадает с каталогом данных.
 pub fn config_root() -> io::Result<PathBuf> {
     if let Some(custom) = override_root() {
         return Ok(custom);
     }
-    #[cfg(target_os = "linux")]
-    {
-        let base = BaseDirs::new().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "не удалось определить пользовательские каталоги",
-            )
-        })?;
-        Ok(base.config_dir().join(APP_DIR_NAME))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        app_root()
-    }
+    app_root()
 }
 
 /// Каталог хранилища (зашифрованные метаданные, профили, счётчик попыток).
@@ -93,21 +78,13 @@ pub fn ensure_dir(path: &Path) -> io::Result<()> {
     restrict_permissions(path)
 }
 
-/// Снимает права группы и остальных на Unix. На Windows каталоги в профиле
-/// пользователя уже ограничены ACL, поэтому вызов ничего не делает.
+/// Ограничение прав доступа к файлу.
+///
+/// В Windows каталоги и файлы в профиле пользователя уже ограничены ACL,
+/// поэтому отдельная работа не нужна: функция оставлена точкой расширения
+/// и вызывается там, где права важно выставить явно.
 pub fn restrict_permissions(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = if path.is_dir() { 0o700 } else { 0o600 };
-        let mut perms = fs::metadata(path)?.permissions();
-        perms.set_mode(mode);
-        fs::set_permissions(path, perms)?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
+    let _ = path;
     Ok(())
 }
 

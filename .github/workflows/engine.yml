@@ -24,7 +24,7 @@ on:
       asset_name:
         description: "Имя нашего архива в релизе"
         required: true
-        default: "antidetect-linux-x64.zip"
+        default: "antidetect-win64.zip"
       notes:
         description: "Что вошло в сборку"
         required: false
@@ -36,12 +36,13 @@ permissions:
 jobs:
   mirror:
     name: упаковка и подпись движка
-    runs-on: ubuntu-22.04
+    runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Проверить наличие ключа подписи
+        shell: bash
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
@@ -52,36 +53,39 @@ jobs:
           fi
 
       - name: Скачать сборку-основу
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p work
           curl --fail --location --retry 3 --output work/upstream.zip "${{ inputs.upstream_url }}"
           ls -l work/upstream.zip
 
-      - name: Распаковать и подготовить архив
+      - name: Распаковать и собрать наш архив
+        shell: bash
         run: |
           set -euo pipefail
           cd work
-          unzip -q upstream.zip -d unpacked
-          # Внутри может быть один каталог верхнего уровня — переносим его
-          # содержимое наверх, чтобы у лаунчера была предсказуемая раскладка.
+          # 7-Zip есть на раннере Windows и понимает оба формата.
+          "/c/Program Files/7-Zip/7z.exe" x -y -ounpacked upstream.zip >/dev/null
           entries=$(ls -1 unpacked | wc -l)
           if [ "$entries" = "1" ] && [ -d "unpacked/$(ls -1 unpacked)" ]; then
             mv "unpacked/$(ls -1 unpacked)" payload
           else
             mv unpacked payload
           fi
-          zip -qr "../${{ inputs.asset_name }}" payload
+          "/c/Program Files/7-Zip/7z.exe" a -tzip -mx=5 "../${{ inputs.asset_name }}" payload >/dev/null
           cd ..
           ls -l "${{ inputs.asset_name }}"
 
       - name: Контрольные суммы
+        shell: bash
         run: |
           set -euo pipefail
           sha256sum "${{ inputs.asset_name }}" > SHA256SUMS
           cat SHA256SUMS
 
       - name: Подпись GPG
+        shell: bash
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
@@ -93,6 +97,7 @@ jobs:
           ls -l SHA256SUMS SHA256SUMS.asc
 
       - name: Проверить, что подпись сделана нашим ключом
+        shell: bash
         run: |
           set -euo pipefail
           key_file=$(ls launcher/src-tauri/resources/keys/*.asc 2>/dev/null | head -n 1 || true)
@@ -115,6 +120,7 @@ jobs:
           fi
 
       - name: Публикация релиза движка
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

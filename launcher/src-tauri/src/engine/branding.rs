@@ -22,8 +22,8 @@
 //! реагирует (проверено). Поэтому вежливая остановка — это `WM_CLOSE` окну,
 //! то есть ровно то же, что нажатие крестика пользователем.
 //!
-//! На Linux имя окна задаётся флагом `--class=FousBrowser` при запуске
-//! (см. [`crate::engine::flags`]).
+//! Поддерживается только Windows: сборки для macOS и Linux не выпускаются,
+//! поэтому оформление делается единственным доступным способом.
 
 use std::sync::atomic::AtomicIsize;
 use std::sync::Arc;
@@ -33,7 +33,6 @@ use std::time::Duration;
 const POLL: Duration = Duration::from_millis(400);
 
 /// Вежливое закрытие окна профиля (то же, что нажатие крестика).
-#[cfg(windows)]
 pub use windows::close_window;
 
 /// Сколько попыток дождаться появления окна (примерно 30 секунд).
@@ -44,17 +43,9 @@ const APPEAR_TRIES: usize = 75;
 /// `handle` получает описатель окна (0 — окно ещё не найдено или уже
 /// закрылось); им пользуется остановка профиля.
 pub fn start(pid: u32, profile_name: String, engine_stem: String, handle: Arc<AtomicIsize>) {
-    #[cfg(windows)]
-    {
-        std::thread::spawn(move || {
-            windows::manage(pid, &profile_name, &engine_stem, &handle);
-        });
-    }
-    #[cfg(not(windows))]
-    {
-        // На Unix окно оформляется флагом --class, сообщения отправлять некому.
-        let _ = (pid, profile_name, engine_stem, handle);
-    }
+    std::thread::spawn(move || {
+        windows::manage(pid, &profile_name, &engine_stem, &handle);
+    });
 }
 
 /// Разделители, которыми движок отделяет название продукта от заголовка
@@ -138,7 +129,6 @@ pub fn retitle(current: &str, brand_names: &[String], profile_name: &str) -> Opt
     Some(title)
 }
 
-#[cfg(windows)]
 mod windows {
     //! Минимальные объявления Win32: тянем только те функции, что нужны
     //! для оформления и закрытия окна. Отдельная библиотека ради десятка

@@ -38,17 +38,12 @@ pub const POINTER_FILE: &str = "current.json";
 ///
 /// Первым идёт имя самого FousBrowser: собранный под проект движок
 /// (Фаза B плана) носит имя проекта и его значок, а не имя чужого вендора.
-#[cfg(windows)]
 pub const CANDIDATES: &[&str] = &[
     "FousBrowser.exe",
     "chromium.exe",
     "chrome.exe",
     "browser.exe",
 ];
-
-/// Имена главного файла движка для Unix-подобных систем.
-#[cfg(not(windows))]
-pub const CANDIDATES: &[&str] = &["fousbrowser", "chromium", "chrome", "browser"];
 
 /// Найденный движок.
 #[derive(Debug, Clone, PartialEq, Eq)]

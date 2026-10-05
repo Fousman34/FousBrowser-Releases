@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::version;
-use super::{Platform, Release, UpdateError, UpdateResult, Channel};
+use super::{Channel, Platform, Release, UpdateError, UpdateResult};
 
 /// Манифест Stable-версии Chrome for Testing.
 pub const NORMAL_MANIFEST_URL: &str =
@@ -175,7 +175,10 @@ pub fn antidetect_release(
             return None;
         }
         let lowered = name.to_lowercase();
-        let matches = platform.archive_hints().iter().any(|hint| lowered.contains(hint));
+        let matches = platform
+            .archive_hints()
+            .iter()
+            .any(|hint| lowered.contains(hint));
         if !matches {
             return None;
         }
@@ -249,7 +252,11 @@ mod tests {
             .expect("обновление должно быть найдено");
         assert_eq!(release.version, "154.0.8037.92");
         assert_eq!(release.channel, Channel::Normal);
-        assert!(release.asset_url.contains("/win64/chrome-win64.zip"), "{}", release.asset_url);
+        assert!(
+            release.asset_url.contains("/win64/chrome-win64.zip"),
+            "{}",
+            release.asset_url
+        );
         assert!(release.asset_name.ends_with(".zip"));
         // Официальный источник сумм не публикует — это его свойство.
         assert!(release.sha256.is_none());
@@ -257,20 +264,16 @@ mod tests {
 
     #[test]
     fn same_version_is_not_an_update() {
-        assert!(normal_release(MANIFEST, Platform::WindowsX64, Some("154.0.8037.92"))
-            .unwrap()
-            .is_none());
-        assert!(normal_release(MANIFEST, Platform::LinuxX64, Some("200.0.0.0"))
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
-    fn linux_platform_gets_its_own_archive() {
-        let release = normal_release(MANIFEST, Platform::LinuxX64, None)
-            .unwrap()
-            .unwrap();
-        assert!(release.asset_url.contains("/linux64/chrome-linux64.zip"), "{}", release.asset_url);
+        assert!(
+            normal_release(MANIFEST, Platform::WindowsX64, Some("154.0.8037.92"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            normal_release(MANIFEST, Platform::WindowsX64, Some("200.0.0.0"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -345,19 +348,25 @@ mod tests {
         assert!(release.sums_url.is_some() && release.signature_url.is_some());
 
         // Релиз лаунчера не должен приниматься за движок.
-        assert!(antidetect_release(&releases, Platform::WindowsX64, Some("121.0.6167.85"))
-            .unwrap()
-            .is_none());
+        assert!(
+            antidetect_release(&releases, Platform::WindowsX64, Some("121.0.6167.85"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn release_without_archive_for_platform_is_reported() {
         let releases = serde_json::to_string(&vec![github_release(
             "antidetect-v121.0.6167.85",
-            &[("antidetect-macos.zip", 100), (SUMS_ASSET, 50), (SIGNATURE_ASSET, 40)],
+            &[
+                ("antidetect-macos.zip", 100),
+                (SUMS_ASSET, 50),
+                (SIGNATURE_ASSET, 40),
+            ],
         )])
         .unwrap();
-        let error = antidetect_release(&releases, Platform::LinuxX64, None).unwrap_err();
+        let error = antidetect_release(&releases, Platform::WindowsX64, None).unwrap_err();
         assert!(error.to_string().contains("архива"), "{error}");
     }
 }

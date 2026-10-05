@@ -2,6 +2,8 @@ name: ci
 
 # Проверки на каждый push и pull request: ядро, типы фронтенда, сборка.
 # Пакеты здесь не собираются — этим занимается release.yml по тегу версии.
+#
+# Поддерживается только Windows: сборки для macOS и Linux не выпускаются.
 
 on:
   push:
@@ -14,26 +16,11 @@ env:
 
 jobs:
   check:
-    name: проверки (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-22.04]
+    name: проверки (windows)
+    runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: "Linux: системные библиотеки для Tauri"
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libgtk-3-dev
 
       - name: Node.js
         uses: actions/setup-node@v4

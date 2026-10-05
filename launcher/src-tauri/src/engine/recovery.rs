@@ -237,17 +237,10 @@ fn stop_orphan_process(entry: &super::journal::Entry) -> Option<u32> {
     Some(entry.pid)
 }
 
-/// Сравнивает пути без учёта регистра на Windows.
+/// Сравнивает пути без учёта регистра: в Windows это одно и то же имя.
 fn paths_equal(left: &Path, right: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        left.to_string_lossy()
-            .eq_ignore_ascii_case(&right.to_string_lossy())
-    }
-    #[cfg(not(windows))]
-    {
-        left == right
-    }
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
 }
 
 /// Проверяет, что путь из журнала указывает внутрь каталога расшифрованных копий.
