@@ -693,6 +693,7 @@ pub async fn profile_launch(
     app: AppHandle,
     state: State<'_, VaultState>,
     engines: State<'_, EngineManager>,
+    bridges: State<'_, crate::proxy::BridgeManager>,
 ) -> CommandResult<RuntimeView> {
     if engines.is_running(&profile_id) {
         return Err(CommandError::new(
@@ -712,17 +713,20 @@ pub async fn profile_launch(
     let engine: Engine = discovery::resolve(profile.kind)?;
     let temp_dir = with_vault(&state, |vault| Ok(vault.temp_profile_dir(&profile_id)))?;
 
-    // Прокси с логином и паролем требует локального моста: движки не умеют
-    // парольную аутентификацию через --proxy-server. Мост появится на этапе
-    // M6, до тех пор такой профиль честно отказывается запускаться, а не
-    // молча ходит напрямую.
+    // Прокси с логином и паролем обслуживает локальный мост: движки не умеют
+    // парольную аутентификацию через `--proxy-server`. В командную строку
+    // движка уходит только адрес моста, без секретов.
     let proxy_address = match &profile.proxy {
         None => None,
         Some(config) if flags::proxy_needs_bridge(config) => {
-            return Err(CommandError::new(
-                "proxy_bridge_required",
-                "у прокси задан логин или пароль: нужен локальный прокси-мост (этап M6)",
-            ))
+            match crate::proxy::Bridge::start(config.clone()).await {
+                Ok(bridge) => {
+                    let address = bridge.address();
+                    bridges.insert(&profile_id, bridge);
+                    Some(address)
+                }
+                Err(error) => return Err(CommandError::from(error)),
+            }
         }
         Some(config) => Some(flags::proxy_address(config)),
     };
@@ -761,6 +765,8 @@ pub async fn profile_launch(
             if let Err(seal_error) = seal_back(&state, &profile_id) {
                 eprintln!("не удалось зашифровать данные после неудачного запуска: {seal_error:?}");
             }
+            // Мост тоже не нужен: профиль не работает.
+            bridges.stop(&profile_id);
             return Err(error.into());
         }
     };
@@ -791,12 +797,16 @@ pub async fn profile_stop(
     app: AppHandle,
     state: State<'_, VaultState>,
     engines: State<'_, EngineManager>,
+    bridges: State<'_, crate::proxy::BridgeManager>,
 ) -> CommandResult<RuntimeView> {
     if !engines.is_running(&profile_id) {
         // Данные могли остаться расшифрованными после сбоя: возвращаем их
         // в контейнер, даже если процесса уже нет.
         seal_back(&state, &profile_id)?;
         journal_remove(&paths::vault_dir()?, &profile_id)?;
+        // Мост без работающего профиля не нужен: он держал бы открытым
+        // соединение к прокси от имени пользователя.
+        bridges.stop(&profile_id);
         emit_state(&app, &profile_id, "stopped", None, None);
         return runtime_of(&engines, &state, &profile_id);
     }
@@ -813,6 +823,7 @@ pub async fn profile_stop(
     emit_state(&app, &profile_id, "stopping", None, None);
 
     let stopped = engines.stop(&profile_id, GRACEFUL_TIMEOUT, FORCED_TIMEOUT);
+    bridges.stop(&profile_id);
 
     let result = match seal_back(&state, &profile_id) {
         Ok(()) => {
@@ -862,6 +873,7 @@ pub async fn profile_stop_all(
     app: AppHandle,
     state: State<'_, VaultState>,
     engines: State<'_, EngineManager>,
+    bridges: State<'_, crate::proxy::BridgeManager>,
 ) -> CommandResult<StopAllReport> {
     let ids = engines.ids();
     let vault_dir = paths::vault_dir()?;
@@ -896,6 +908,7 @@ pub async fn profile_stop_all(
         match seal_back(&state, &id) {
             Ok(()) => {
                 let _ = journal_remove(&vault_dir, &id);
+                bridges.stop(&id);
                 emit_state(&app, &id, "stopped", None, None);
                 report.stopped.push(id);
             }
@@ -925,11 +938,15 @@ pub fn reap_and_finalize(app: &AppHandle) {
     }
 
     let state = app.state::<VaultState>();
+    let bridges = app.state::<crate::proxy::BridgeManager>();
     let Ok(vault_dir) = paths::vault_dir() else {
         return;
     };
 
     for view in finished {
+        // Профиль завершился: мост к прокси больше не нужен.
+        bridges.stop(&view.profile_id);
+
         if !state.is_unlocked() {
             eprintln!(
                 "профиль {} завершился, но хранилище заперто: данные будут зашифрованы при разблокировке",

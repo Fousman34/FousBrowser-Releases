@@ -14,6 +14,9 @@ pub mod engine;
 /// Определение пользовательских каталогов.
 pub mod paths;
 
+/// Локальный прокси-мост: движку — беспарольный адрес, апстриму — секрет.
+pub mod proxy;
+
 /// Шифрованное хранилище: ключи, метаданные, профили, данные профилей.
 pub mod vault;
 
@@ -28,6 +31,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(commands::VaultState::default())
         .manage(engine::EngineManager::default())
+        .manage(proxy::BridgeManager::default())
         .setup(|app| {
             // Сторож: как только браузер закрылся (пользователь нажал «выход»),
             // данные профиля шифруются обратно. Интерфейс замораживать нельзя,

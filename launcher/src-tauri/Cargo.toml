@@ -35,7 +35,7 @@ uuid = { version = "1.27.0", features = ["v4", "serde"] }
 directories = "6.0.0"
 hex = "0.4.3"
 getrandom = "0.4.3"
-tokio = { version = "1", features = ["rt", "time", "net", "io-util", "sync"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
