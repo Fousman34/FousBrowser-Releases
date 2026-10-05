@@ -21,6 +21,13 @@ use super::UpdateResult;
 use super::{download, gpg, staging_dir, write_pointer, Channel, Platform, Release, UpdateError};
 use crate::engine::discovery;
 
+/// Текст лицензии проекта-основы движка Antidetect (BSD 3-Clause).
+const ENGINE_LICENSE: &str =
+    include_str!("../../resources/licenses/ungoogled-chromium-LICENSE.txt");
+
+/// Уведомление о происхождении сборки движка.
+const ENGINE_NOTICE: &str = include_str!("../../resources/licenses/antidetect-NOTICE.txt");
+
 /// Скачанный и проверенный архив, готовый к установке.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prepared {
@@ -126,6 +133,17 @@ pub fn install(
 
     on_log("распаковка архива");
     unpack_zip(&prepared.archive, &unpacked)?;
+
+    // Лицензия и уведомление кладутся рядом с движком: сам архив публикуется
+    // байт в байт как у проекта-основы, а BSD 3-Clause требует поставлять
+    // текст лицензии вместе с распространяемым кодом.
+    if prepared.channel == Channel::Antidetect {
+        fs::write(
+            unpacked.join("ungoogled-chromium-LICENSE.txt"),
+            ENGINE_LICENSE,
+        )?;
+        fs::write(unpacked.join("NOTICE-FousBrowser.txt"), ENGINE_NOTICE)?;
+    }
 
     // Главный файл ищем так же, как потом его найдёт запуск: раскладка
     // внутри архива у разных сборок отличается.
@@ -282,6 +300,49 @@ mod tests {
 
         // Staging после установки пуст.
         assert!(!staging.exists() || fs::read_dir(&staging).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn antidetect_install_carries_the_license() {
+        // Байты архива публикуются без изменений, поэтому текст лицензии
+        // добавляется при установке: этого требует BSD 3-Clause.
+        let tmp = tempfile::tempdir().unwrap();
+        let browsers = tmp.path().join("browsers");
+        let staging = staging_dir(&browsers, Channel::Antidetect);
+        crate::paths::ensure_dir(&staging).unwrap();
+
+        let archive = staging.join("antidetect-win64.zip");
+        build_zip(&archive, &[("payload/chrome.exe", b"binary")]);
+
+        let prepared = Prepared {
+            channel: Channel::Antidetect,
+            version: "150.0.7871.186".to_string(),
+            archive,
+        };
+        install(&prepared, &browsers, Platform::WindowsX64, |_| {}).unwrap();
+
+        let target = crate::updater::engine_dir(&browsers, Channel::Antidetect, "150.0.7871.186");
+        let license = target.join("ungoogled-chromium-LICENSE.txt");
+        let notice = target.join("NOTICE-FousBrowser.txt");
+        assert!(
+            license.is_file(),
+            "текст лицензии обязан быть рядом с движком"
+        );
+        assert!(
+            notice.is_file(),
+            "уведомление о сборке обязано быть рядом с движком"
+        );
+
+        let text = fs::read_to_string(&license).unwrap();
+        assert!(
+            text.contains("BSD 3-Clause"),
+            "лицензия должна быть настоящей"
+        );
+        let notice_text = fs::read_to_string(&notice).unwrap();
+        assert!(
+            notice_text.contains("fingerprint-chromium"),
+            "в уведомлении указан проект-основа"
+        );
     }
 
     #[test]

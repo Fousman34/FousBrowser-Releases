@@ -1,0 +1,17 @@
+{
+  "version": "150.0.7871.186",
+  "asset_name": "antidetect-win64.zip",
+  "upstream": {
+    "project": "fingerprint-chromium",
+    "repository": "https://github.com/adryfish/fingerprint-chromium",
+    "tag": "150.0.7871.186",
+    "url": "https://github.com/adryfish/fingerprint-chromium/releases/download/150.0.7871.186/ungoogled-chromium_150.0.7871.186-1.1_windows_x64.zip",
+    "bytes_sha256": "4d549c326e51ebbabf562fd365eb5380d9d4a81200da2c60f075c688d9a77e03",
+    "license": "BSD-3-Clause"
+  },
+  "published": {
+    "sha256": "4d549c326e51ebbabf562fd365eb5380d9d4a81200da2c60f075c688d9a77e03",
+    "note": "Байты публикуются без изменений: хеш совпадает с upstream."
+  },
+  "notes": "Движок Antidetect на основе ungoogled-chromium 150.0.7871.186 с подменой отпечатка (Фаза A: зеркалирование готовой сборки, подписанной нашим ключом)."
+}

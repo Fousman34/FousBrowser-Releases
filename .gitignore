@@ -51,3 +51,12 @@ desktop.ini
 !launcher/src-tauri/resources/keys/*.asc
 core-tests.log
 
+# ===== Манифесты релизов движка =====
+# Сам движок в git не попадает (сотни мегабайт), но манифест, список сумм и
+# подпись обязаны быть в репозитории: из них собирается релиз и по ним
+# проверяется подлинность скачанного архива.
+!browsers/antidetect/
+!browsers/antidetect/*/
+!browsers/antidetect/*/release.json
+!browsers/antidetect/*/SHA256SUMS
+!browsers/antidetect/*/SHA256SUMS.asc

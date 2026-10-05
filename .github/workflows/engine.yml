@@ -1,138 +1,158 @@
 name: engine
 
-# Сборка релиза движка Antidetect.
+# Релиз движка Antidetect: публикация сборки, подписанной нашим ключом.
 #
-# Движок не компилируется здесь: сборка Chromium занимает часы и требует
-# сотни гигабайт, что несовместимо с раннерами GitHub. Вместо этого берётся
-# готовая сборка проекта-основы (Фаза A плана движка), упаковывается
-# в собственный архив, подписывается GPG и публикуется в наших релизах.
+# Почему движок не компилируется здесь: сборка Chromium — это около 100 ГБ
+# исходников и много часов на мощной машине; раннеры GitHub для этого не
+# предназначены. Фаза A плана движка — зеркалирование готовой сборки
+# проекта-основы (ungoogled-chromium с патчами подмены отпечатка) в наши
+# релизы, где она подписана нашим ключом.
 #
-# Запускается вручную: Actions → engine → Run workflow.
-# Секреты:
-#   GPG_PRIVATE_KEY — приватный ключ подписи (обязателен: лаунчер отказывается
-#                     ставить движок без проверенной подписи).
+# Как устроена подлинность:
+#
+#   * Подпись делается там, где лежит приватный ключ (не в CI): в репозитории
+#     рядом с манифестом лежат SHA256SUMS и SHA256SUMS.asc.
+#   * Этот workflow перед публикацией СКАЧИВАЕТ сборку, проверяет GPG-подпись
+#     списка сумм встроенным публичным ключом и сверяет SHA-256 архива.
+#   * Если байты не совпали с подписанными — публикация не происходит.
+#
+# Поэтому секреты здесь не нужны: CI не подписывает, а только проверяет
+# и публикует то, что уже подписано.
+#
+# Запуск: тег `antidetect-v<версия>` (например antidetect-v150.0.7871.186)
+# либо вручную с указанием версии.
 
 on:
+  push:
+    tags:
+      - "antidetect-v*"
   workflow_dispatch:
     inputs:
       version:
-        description: "Версия движка, например 121.0.6167.85"
+        description: "Версия движка из каталога browsers/antidetect/<версия>"
         required: true
-      upstream_url:
-        description: "Ссылка на архив сборки-основы (zip)"
-        required: true
-      asset_name:
-        description: "Имя нашего архива в релизе"
-        required: true
-        default: "antidetect-win64.zip"
-      notes:
-        description: "Что вошло в сборку"
-        required: false
-        default: ""
 
 permissions:
   contents: write
 
 jobs:
-  mirror:
-    name: упаковка и подпись движка
+  publish:
+    name: проверка подписи и публикация
     runs-on: windows-latest
-
+    env:
+      ENGINE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Проверить наличие ключа подписи
+      - name: Определить версию
         shell: bash
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
-          if [ -z "${GPG_PRIVATE_KEY}" ]; then
-            echo "::error::Секрет GPG_PRIVATE_KEY не задан. Без подписи релиз движка выпускать нельзя:"
-            echo "::error::лаунчер обязан проверять GPG-подпись перед установкой."
+          set -euo pipefail
+          # Тег имеет вид antidetect-v<версия>; при ручном запуске версия без префикса.
+          version="${ENGINE_VERSION#antidetect-v}"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "TAG=antidetect-v${version}" >> "$GITHUB_ENV"
+          echo "Версия: ${version}"
+
+      - name: Прочитать манифест релиза
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="browsers/antidetect/${VERSION}"
+          if [ ! -f "${dir}/release.json" ]; then
+            echo "::error::Нет манифеста ${dir}/release.json — версия не подготовлена к публикации."
             exit 1
           fi
+          for file in release.json SHA256SUMS SHA256SUMS.asc; do
+            if [ ! -f "${dir}/${file}" ]; then
+              echo "::error::В ${dir} нет файла ${file}: без него релиз выпускать нельзя."
+              exit 1
+            fi
+          done
 
-      - name: Скачать сборку-основу
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json, pathlib, os
+          version = os.environ["VERSION"]
+          manifest = json.loads(pathlib.Path(f"browsers/antidetect/{version}/release.json").read_text(encoding="utf-8"))
+          print(f"ASSET_NAME={manifest['asset_name']}")
+          print(f"UPSTREAM_URL={manifest['upstream']['url']}")
+          print(f"EXPECTED_SHA256={manifest['published']['sha256']}")
+          PY
+          echo "Файл релиза: ${ASSET_NAME}"
+
+      - name: Скачать сборку движка
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p work
-          curl --fail --location --retry 3 --output work/upstream.zip "${{ inputs.upstream_url }}"
-          ls -l work/upstream.zip
+          mkdir -p dist
+          curl --fail --location --retry 3 --output "dist/${ASSET_NAME}" "${UPSTREAM_URL}"
+          ls -l "dist/${ASSET_NAME}"
 
-      - name: Распаковать и собрать наш архив
+      - name: Проверить GPG-подпись списка сумм
         shell: bash
         run: |
           set -euo pipefail
-          cd work
-          # 7-Zip есть на раннере Windows и понимает оба формата.
-          "/c/Program Files/7-Zip/7z.exe" x -y -ounpacked upstream.zip >/dev/null
-          entries=$(ls -1 unpacked | wc -l)
-          if [ "$entries" = "1" ] && [ -d "unpacked/$(ls -1 unpacked)" ]; then
-            mv "unpacked/$(ls -1 unpacked)" payload
-          else
-            mv unpacked payload
-          fi
-          "/c/Program Files/7-Zip/7z.exe" a -tzip -mx=5 "../${{ inputs.asset_name }}" payload >/dev/null
-          cd ..
-          ls -l "${{ inputs.asset_name }}"
+          dir="browsers/antidetect/${VERSION}"
+          key_file=$(ls launcher/src-tauri/resources/keys/*.asc | head -n 1)
 
-      - name: Контрольные суммы
-        shell: bash
-        run: |
-          set -euo pipefail
-          sha256sum "${{ inputs.asset_name }}" > SHA256SUMS
-          cat SHA256SUMS
-
-      - name: Подпись GPG
-        shell: bash
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
-          # Подписывается именно список сумм: он покрывает все файлы релиза.
-          gpg --batch --yes --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS
-          gpg --verify SHA256SUMS.asc SHA256SUMS
-          ls -l SHA256SUMS SHA256SUMS.asc
-
-      - name: Проверить, что подпись сделана нашим ключом
-        shell: bash
-        run: |
-          set -euo pipefail
-          key_file=$(ls launcher/src-tauri/resources/keys/*.asc 2>/dev/null | head -n 1 || true)
-          if [ -z "${key_file}" ]; then
-            echo "::error::В launcher/src-tauri/resources/keys/ нет публичного ключа — лаунчер не сможет проверить подпись."
-            exit 1
-          fi
+          gpg --batch --quiet --import "${key_file}"
+          gpg --batch --verify "${dir}/SHA256SUMS.asc" "${dir}/SHA256SUMS"
 
           expected=$(gpg --show-keys --with-colons "${key_file}" | awk -F: '/^fpr:/ {print $10; exit}')
-          actual=$(gpg --with-colons --verify SHA256SUMS.asc SHA256SUMS 2>/dev/null \
+          actual=$(gpg --with-colons --verify "${dir}/SHA256SUMS.asc" "${dir}/SHA256SUMS" 2>/dev/null \
             | awk -F: '/^VALIDSIG/ {print ($12 != "" ? $12 : $2); exit}')
-
-          echo "Публичный ключ в репозитории: ${key_file}"
-          echo "Отпечаток в репозитории: ${expected}"
-          echo "Отпечаток подписи:       ${actual}"
-
+          echo "Ключ в лаунчере: ${expected}"
+          echo "Ключ подписи:    ${actual}"
           if [ "${expected}" != "${actual}" ]; then
-            echo "::error::Релиз подписан не тем ключом, который встроен в лаунчер: установка будет отвергнута."
+            echo "::error::Список сумм подписан не тем ключом, который встроен в лаунчер."
             exit 1
           fi
 
-      - name: Публикация релиза движка
+      - name: Сверить контрольную сумму архива
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual=$(sha256sum "dist/${ASSET_NAME}" | awk '{print $1}')
+          echo "Ожидается: ${EXPECTED_SHA256}"
+          echo "Получено:  ${actual}"
+          if [ "${actual}" != "${EXPECTED_SHA256}" ]; then
+            echo "::error::Архив не совпал с подписанной контрольной суммой — публикация отменена."
+            exit 1
+          fi
+          # Список сумм в релизе должен относиться к имени публикуемого файла.
+          grep -q "${actual}  ${ASSET_NAME}" "browsers/antidetect/${VERSION}/SHA256SUMS"
+
+      - name: Проверить, что внутри архива есть движок
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p unpacked
+          "/c/Program Files/7-Zip/7z.exe" x -y -ounpacked "dist/${ASSET_NAME}" >/dev/null
+          found=$(find unpacked -maxdepth 2 \( -iname 'chrome.exe' -o -iname 'fousbrowser.exe' \) | head -n 1)
+          if [ -z "${found}" ]; then
+            echo "::error::В архиве не найден исполняемый файл движка."
+            exit 1
+          fi
+          echo "Исполняемый файл: ${found}"
+          rm -rf unpacked
+
+      - name: Публикация релиза
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag="antidetect-v${{ inputs.version }}"
-          gh release view "${tag}" >/dev/null 2>&1 || gh release create "${tag}" \
-            --title "Antidetect engine ${{ inputs.version }}" \
-            --notes "${{ inputs.notes }}" \
+          dir="browsers/antidetect/${VERSION}"
+          notes=$(python -c "import json,pathlib,sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))['notes'])" "${dir}/release.json")
+
+          gh release view "${TAG}" >/dev/null 2>&1 || gh release create "${TAG}" \
+            --title "Antidetect engine ${VERSION}" \
+            --notes "${notes}" \
             --target "${GITHUB_SHA}"
-          gh release upload "${tag}" \
-            "${{ inputs.asset_name }}" \
-            SHA256SUMS \
-            SHA256SUMS.asc \
+
+          gh release upload "${TAG}" \
+            "dist/${ASSET_NAME}" \
+            "${dir}/SHA256SUMS" \
+            "${dir}/SHA256SUMS.asc" \
             --clobber
-          gh release view "${tag}"
+          gh release view "${TAG}"
