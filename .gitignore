@@ -49,3 +49,5 @@ desktop.ini
 # Приватный ключ в репозиторий не попадает никогда: он хранится только
 # в секретах GitHub Actions (GPG_PRIVATE_KEY).
 !launcher/src-tauri/resources/keys/*.asc
+core-tests.log
+

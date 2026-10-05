@@ -44,7 +44,21 @@ jobs:
 
       - name: Тесты ядра
         working-directory: launcher/src-tauri
-        run: cargo test --lib
+        shell: bash
+        run: cargo test --lib 2>&1 | tee core-tests.log
+
+      - name: Назвать упавшие тесты
+        if: failure()
+        working-directory: launcher/src-tauri
+        shell: bash
+        run: |
+          if [ -f core-tests.log ]; then
+            grep -E '^test .* FAILED' core-tests.log | sed 's/^/::error title=Упавший тест::/' || true
+            grep -E '^---- .* stdout ----' core-tests.log | head -n 5 | sed 's/^/::warning::/' || true
+            tail -n 40 core-tests.log
+          else
+            echo "::error::Журнал тестов не создан"
+          fi
 
   bundle:
     name: установщики (${{ matrix.os }})
