@@ -1,9 +1,9 @@
 name: release
 
-# Релиз лаунчера по тегу версии: собираются установщики Windows,
-# создаётся черновик релиза, к нему прикладываются контрольные суммы.
+# Релиз лаунчера по тегу версии: собираются установщики Windows, релиз
+# публикуется сразу, к нему прикладываются контрольные суммы SHA-256.
 #
-# Тег: v0.1.0 (совпадает с version в tauri.conf.json).
+# Тег совпадает с version в tauri.conf.json (сейчас 0.1.1).
 # macOS и Linux не поддерживаются: сборки для них не выпускаются.
 
 on:
@@ -105,29 +105,31 @@ jobs:
           releaseDraft: false
           prerelease: false
 
-  checksums:
-    name: контрольные суммы
-    needs: bundle
-    runs-on: windows-latest
-    steps:
-      - name: Скачать собранные файлы из черновика релиза
-        shell: bash
+      - name: Контрольные суммы установщиков
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          mkdir -p dist
-          gh release download "${GITHUB_REF_NAME}" --dir dist --clobber \
-            --pattern '*.exe' --pattern '*.msi' || true
+          # Суммы считаются по локальным файлам, а не скачиванием из релиза:
+          # прошлый вариант при сбое загрузки молча пропускал шаг, и релиз
+          # оставался без SHA256SUMS.
+          $items = @(
+            Get-ChildItem launcher/src-tauri/target/release/bundle/nsis/*.exe -ErrorAction SilentlyContinue
+            Get-ChildItem launcher/src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue
+          )
+          if ($items.Count -eq 0) {
+            Write-Error 'Установщики не найдены — контрольные суммы посчитать нельзя'
+            exit 1
+          }
 
-          if [ -z "$(ls -A dist 2>/dev/null)" ]; then
-            echo "Нет собранных файлов для подсчёта сумм — пропускаем шаг"
-            exit 0
-          fi
+          $lines = foreach ($item in $items) {
+            "$((Get-FileHash $item.FullName -Algorithm SHA256).Hash.ToLower())  $($item.Name)"
+          }
+          $lines | Out-File -FilePath SHA256SUMS -Encoding ascii
+          Get-Content SHA256SUMS
 
-          cd dist
-          sha256sum ./* > ../SHA256SUMS
-          cd ..
-          cat SHA256SUMS
-
-          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS --clobber
+          gh release upload "${{ github.ref_name }}" SHA256SUMS --clobber
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error 'Не удалось приложить SHA256SUMS к релизу'
+            exit 1
+          }

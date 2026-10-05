@@ -1,6 +1,6 @@
 {
   "name": "fousbrowser-launcher",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "FousBrowser launcher — encrypted browser profile manager with Normal and Antidetect engines",
   "type": "module",
   "scripts": {

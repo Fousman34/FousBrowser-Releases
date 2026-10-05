@@ -1,6 +1,6 @@
 [package]
 name = "fousbrowser-launcher"
-version = "0.1.0"
+version = "0.1.1"
 description = "FousBrowser launcher — encrypted browser profile manager"
 authors = ["Fousman34"]
 license = "PolyForm-Noncommercial-1.0.0"
