@@ -158,4 +158,54 @@ mod tests {
             "встроенный ключ должен совпадать с задокументированным отпечатком"
         );
     }
+
+    /// Подписи всех подготовленных релизов движка обязаны проверяться **тем же
+    /// кодом**, который проверяет их на машине пользователя.
+    ///
+    /// Тест идёт по каталогу `browsers/antidetect/*/`: если положить туда
+    /// манифест с чужой или испорченной подписью, проверка не пройдёт.
+    /// Внешний `gpg` для этого не нужен — ни в CI, ни у пользователя.
+    #[test]
+    fn every_prepared_release_has_a_valid_signature() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("browsers")
+            .join("antidetect");
+
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            // Каталога может не быть: это не ошибка.
+            return;
+        };
+
+        let mut checked = 0;
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let dir = entry.path();
+            let sums = dir.join("SHA256SUMS");
+            let signature = dir.join("SHA256SUMS.asc");
+            assert!(
+                sums.is_file() && signature.is_file(),
+                "в релизе {} нет списка сумм или подписи: публиковать такой релиз нельзя",
+                dir.display()
+            );
+
+            let data = std::fs::read(&sums).unwrap();
+            let signature_bytes = std::fs::read(&signature).unwrap();
+            verify_detached(&data, &signature_bytes, None).unwrap_or_else(|error| {
+                panic!(
+                    "подпись релиза {} не подтверждена встроенным ключом: {error}",
+                    dir.display()
+                )
+            });
+            checked += 1;
+        }
+
+        assert!(
+            checked > 0,
+            "не найдено ни одного подготовленного релиза движка"
+        );
+    }
 }

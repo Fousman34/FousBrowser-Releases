@@ -79,39 +79,26 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Error 'Не удалось скачать сборку'; exit 1 }
           Get-Item "dist/$env:ASSET_NAME" | Select-Object Name, Length
 
-      - name: Проверить GPG-подпись списка сумм
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Кеш сборки Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher/src-tauri
+
+      - name: Проверить GPG-подпись нашим кодом
         shell: pwsh
         run: |
-          $dir = "browsers/antidetect/$env:VERSION"
-          # gpg в Windows приходит из Git для Windows, то есть из MSYS: он
-          # ожидает пути с прямыми слэшами и без буквы диска в виде «D:\».
-          $key = (Get-ChildItem launcher/src-tauri/resources/keys/*.asc | Select-Object -First 1).FullName
-          $key = $key -replace '\\', '/'
-
-          # Отдельное хранилище ключей: проверяем ровно тот ключ, который
-          # встроен в лаунчер, и никакой другой.
-          $env:GNUPGHOME = Join-Path $env:RUNNER_TEMP 'gnupg'
-          New-Item -ItemType Directory -Force -Path $env:GNUPGHOME | Out-Null
-
-          $gpg = (Get-Command gpg -ErrorAction SilentlyContinue).Source
-          if (-not $gpg) { $gpg = 'C:\Program Files\Git\usr\bin\gpg.exe' }
-          if (-not (Test-Path $gpg)) { Write-Error "Не найден gpg: $gpg"; exit 1 }
-          Write-Output "gpg: $gpg"
-          Write-Output "ключ: $key"
-
-          & $gpg --batch --quiet --import $key
-          if ($LASTEXITCODE -ne 0) { Write-Error 'Не удалось импортировать публичный ключ лаунчера'; exit 1 }
-
-          $status = & $gpg --batch --status-fd 1 --verify "$dir/SHA256SUMS.asc" "$dir/SHA256SUMS" 2>&1
-          $code = $LASTEXITCODE
-          $status | ForEach-Object { Write-Output $_ }
-          if ($code -ne 0 -or -not ($status | Select-String 'GOODSIG')) {
-            Write-Error "Подпись списка сумм не подтверждена (код $code) — публикация отменена"
+          # Подпись проверяет тот же код, который проверяет её на машине
+          # пользователя: модуль updater::gpg. Внешний gpg в проверке не
+          # участвует, поэтому нет ни зависимости от его версии, ни разницы
+          # между «проверено в CI» и «проверено при установке».
+          cargo test --manifest-path launcher/src-tauri/Cargo.toml --lib every_prepared_release -- --nocapture
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error 'Подпись манифеста релиза не подтверждена встроенным ключом — публикация отменена'
             exit 1
           }
-
-          $expected = (& $gpg --show-keys --with-colons $key | Select-String '^fpr:' | Select-Object -First 1).Line.Split(':')[9]
-          Write-Output "Ключ в лаунчере: $expected"
 
       - name: Сверить контрольную сумму архива
         shell: pwsh
