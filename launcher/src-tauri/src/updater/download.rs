@@ -14,8 +14,17 @@ use sha2::{Digest, Sha256};
 
 use super::{UpdateError, UpdateResult};
 
-/// Сколько ждать ответа и данных.
+/// Сколько ждать соединения, а сколько — данных.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Сколько раз пробовать докачать файл.
+///
+/// Загрузка движка — это сотни мегабайт с чужого сервера: соединение рвётся,
+/// CDN притормаживает, машина уходит в сон. Поэтому обрыв не считается
+/// окончательной ошибкой: файл докачивается с того места, где остановился.
+/// Это не теория: без докачки загрузка 185 МиБ обрывалась на 15 МиБ.
+pub const MAX_ATTEMPTS: usize = 6;
 
 /// Ход загрузки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,35 +114,99 @@ pub fn verify_file(sums: &str, asset_name: &str, path: &Path) -> UpdateResult<()
 
 /// Загружает файл по ссылке, сообщая о ходе загрузки.
 ///
-/// Возвращает число полученных байт.
+/// Обрыв соединения не считается окончательной ошибкой: файл докачивается с
+/// того места, где остановился (заголовок `Range`), до [`MAX_ATTEMPTS`] попыток.
+/// Возвращает число байт, оказавшихся в файле.
 pub fn download(
     url: &str,
     target: &Path,
     mut on_progress: impl FnMut(Progress),
 ) -> UpdateResult<u64> {
-    let response = ureq::get(url)
-        .timeout(READ_TIMEOUT)
-        .call()
-        .map_err(|error| UpdateError::Network(format!("{url}: {error}")))?;
+    let mut attempt = 1;
+    loop {
+        match download_once(url, target, &mut on_progress) {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => {
+                if attempt >= MAX_ATTEMPTS || !is_retryable(&error) {
+                    return Err(error);
+                }
+                // Небольшая пауза перед следующей попыткой: если сервер
+                // притормозил, мгновенный повтор только повторит обрыв.
+                std::thread::sleep(Duration::from_secs(2 * attempt as u64));
+                attempt += 1;
+            }
+        }
+    }
+}
 
-    let total = response
-        .header("Content-Length")
-        .and_then(|value| value.parse::<u64>().ok());
+/// Обрыв сети или ввод-вывод имеет смысл повторить; отказ проверки — нет.
+fn is_retryable(error: &UpdateError) -> bool {
+    matches!(error, UpdateError::Network(_) | UpdateError::Io(_))
+}
 
+/// Одна попытка загрузки: при наличии части файла запрашивает остаток.
+fn download_once(
+    url: &str,
+    target: &Path,
+    on_progress: &mut impl FnMut(Progress),
+) -> UpdateResult<u64> {
     if let Some(parent) = target.parent() {
         crate::paths::ensure_dir(parent)?;
     }
 
-    let mut reader = response.into_reader();
-    let mut file = fs::File::create(target)?;
-    let mut buffer = vec![0u8; 64 * 1024];
-    let mut received = 0u64;
+    // Отдельные пределы для соединения и чтения: общий предел на весь запрос
+    // обрывал бы большую загрузку на середине (так и случилось на 185 МиБ).
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(CONNECT_TIMEOUT)
+        .timeout_read(READ_TIMEOUT)
+        .build();
 
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
+    let already = fs::metadata(target).map(|meta| meta.len()).unwrap_or(0);
+    let mut request = agent.get(url);
+    if already > 0 {
+        request = request.set("Range", &format!("bytes={already}-"));
+    }
+
+    let response = request
+        .call()
+        .map_err(|error| UpdateError::Network(format!("{url}: {error}")))?;
+    let status = response.status();
+
+    // 206 — сервер согласился отдать остаток; 200 — отдаёт файл целиком,
+    // поэтому начинаем заново, иначе получим дубликат в начале.
+    let (mut file, mut received) = match (already, status) {
+        (0, 200) => (fs::File::create(target)?, 0u64),
+        (already, 206) => (fs::OpenOptions::new().append(true).open(target)?, already),
+        (already, 416) => {
+            // Файл уже скачан полностью.
+            return Ok(already);
         }
+        (_, 200) => (fs::File::create(target)?, 0u64),
+        (_, status) => {
+            return Err(UpdateError::Network(format!(
+                "{url}: неожиданный ответ {status}"
+            )))
+        }
+    };
+
+    // При ответе 206 длина относится к остатку, а не ко всему файлу.
+    let remaining = response
+        .header("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok());
+    let total = remaining.map(|length| received + length);
+
+    let mut reader = response.into_reader();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) => {
+                // Уже полученные байты не теряем: следующая попытка продолжит.
+                file.sync_all()?;
+                return Err(UpdateError::Io(error));
+            }
+        };
         file.write_all(&buffer[..read])?;
         received += read as u64;
         on_progress(Progress { received, total });
@@ -297,6 +370,88 @@ mod tests {
         assert_eq!(updates.last().unwrap().total, Some(body.len() as u64));
         assert_eq!(updates.last().unwrap().percent(), Some(100.0));
         assert_eq!(sha256_file(&target).unwrap(), sha256_hex(&body));
+    }
+
+    /// Сервер, который на первом запросе отдаёт половину файла и закрывает
+    /// соединение, а на втором — остаток по заголовку `Range`.
+    fn serve_with_break(body: Vec<u8>) -> (String, std::thread::JoinHandle<u32>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let mut requests = 0u32;
+            let half = body.len() / 2;
+            for _ in 0..2 {
+                let Ok((mut socket, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buffer = vec![0u8; 4096];
+                let read = socket.read(&mut buffer).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]).to_lowercase();
+                requests += 1;
+
+                if let Some(rest) = request.split("range: bytes=").nth(1) {
+                    let from = rest
+                        .split('-')
+                        .next()
+                        .unwrap_or("0")
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap_or(0);
+                    let from = from.min(body.len());
+                    let tail = &body[from..];
+                    let headers = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
+                        tail.len(),
+                        from,
+                        body.len().saturating_sub(1),
+                        body.len()
+                    );
+                    let _ = socket.write_all(headers.as_bytes());
+                    let _ = socket.write_all(tail);
+                } else {
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(headers.as_bytes());
+                    // Отдаём половину и закрываем соединение: так выглядит
+                    // обрыв на медленном канале.
+                    let _ = socket.write_all(&body[..half]);
+                }
+                let _ = socket.flush();
+            }
+            requests
+        });
+        (format!("http://{address}/asset"), handle)
+    }
+
+    #[test]
+    fn download_resumes_after_a_broken_connection() {
+        let body: Vec<u8> = (0..300_000u32).map(|value| (value % 253) as u8).collect();
+        let (url, server) = serve_with_break(body.clone());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("asset.zip");
+        let mut updates = Vec::new();
+
+        let received = download(&url, &target, |progress| updates.push(progress)).unwrap();
+        let requests = server.join().unwrap();
+
+        assert_eq!(
+            requests, 2,
+            "ожидались две попытки: обрыв и докачка остатка"
+        );
+        assert_eq!(received, body.len() as u64);
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            body,
+            "после докачки файл обязан совпасть целиком"
+        );
+        assert_eq!(
+            updates.last().unwrap().percent(),
+            Some(100.0),
+            "прогресс должен дойти до конца"
+        );
     }
 
     #[test]
