@@ -122,7 +122,11 @@ mod tests {
         let aad = b"aad";
         let first = seal(&KEY, aad, b"same").unwrap();
         let second = seal(&KEY, aad, b"same").unwrap();
-        assert_ne!(first[..NONCE_LEN], second[..NONCE_LEN], "nonce обязан быть уникальным");
+        assert_ne!(
+            first[..NONCE_LEN],
+            second[..NONCE_LEN],
+            "nonce обязан быть уникальным"
+        );
         assert_ne!(first, second);
     }
 
@@ -137,7 +141,10 @@ mod tests {
     #[test]
     fn wrong_aad_fails() {
         let sealed = seal(&KEY, b"aad-one", b"payload").unwrap();
-        assert!(open(&KEY, b"aad-two", &sealed).is_err(), "AAD должен связывать контейнер с назначением");
+        assert!(
+            open(&KEY, b"aad-two", &sealed).is_err(),
+            "AAD должен связывать контейнер с назначением"
+        );
     }
 
     #[test]

@@ -148,10 +148,7 @@ mod tests {
     fn rejects_foreign_file() {
         let mut foreign = header();
         foreign.magic = "SOMETHING-ELSE".to_string();
-        assert!(matches!(
-            foreign.validate(),
-            Err(VaultError::Corrupted(_))
-        ));
+        assert!(matches!(foreign.validate(), Err(VaultError::Corrupted(_))));
     }
 
     #[test]

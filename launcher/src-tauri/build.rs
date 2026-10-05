@@ -5,10 +5,7 @@ fn main() {
     // каталог собранного фронтенда. Без явных указаний ниже изменение
     // интерфейса не приводило бы к пересборке, и в бинарник попадал бы
     // старый UI. Cargo сканирует указанные каталоги рекурсивно.
-    println!(
-        "cargo:rerun-if-changed={}",
-        Path::new("../build").display()
-    );
+    println!("cargo:rerun-if-changed={}", Path::new("../build").display());
 
     for path in ["../src", "../static"] {
         if Path::new(path).exists() {

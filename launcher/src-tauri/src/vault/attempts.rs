@@ -148,7 +148,20 @@ mod tests {
     #[test]
     fn backoff_grows_in_steps() {
         let mut state = AttemptsState::new(VAULT);
-        let expected = [(0u32, 0u64), (4, 0), (5, 5), (9, 5), (10, 30), (14, 30), (15, 120), (19, 120), (20, 600), (24, 600), (25, 3600), (500, 3600)];
+        let expected = [
+            (0u32, 0u64),
+            (4, 0),
+            (5, 5),
+            (9, 5),
+            (10, 30),
+            (14, 30),
+            (15, 120),
+            (19, 120),
+            (20, 600),
+            (24, 600),
+            (25, 3600),
+            (500, 3600),
+        ];
         for (failed, secs) in expected {
             state.failed = failed;
             assert_eq!(state.backoff_secs(), secs, "для {failed} неудач");
@@ -237,7 +250,10 @@ mod tests {
         other.store(dir.path()).unwrap();
 
         let loaded = AttemptsState::load(dir.path(), VAULT);
-        assert_eq!(loaded.failed, 0, "чужой счётчик не должен влиять на это хранилище");
+        assert_eq!(
+            loaded.failed, 0,
+            "чужой счётчик не должен влиять на это хранилище"
+        );
     }
 
     #[test]

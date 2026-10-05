@@ -173,11 +173,8 @@ impl Vault {
 
         // Пустые метаданные: предустановленных профилей нет и быть не должно.
         let metadata = VaultMetadata::new();
-        let metadata_key = crypto::derive_subkey(
-            &master_key,
-            header.vault_id.as_bytes(),
-            INFO_METADATA,
-        )?;
+        let metadata_key =
+            crypto::derive_subkey(&master_key, header.vault_id.as_bytes(), INFO_METADATA)?;
         let plaintext = serde_json::to_vec(&metadata)?;
         let sealed = crypto::seal(&metadata_key, &header.metadata_aad(), &plaintext)?;
         paths::write_atomic(&Self::metadata_path(dir), &sealed)?;
@@ -233,8 +230,8 @@ impl Vault {
         let metadata_key =
             crypto::derive_subkey(&master_key, self.header.vault_id.as_bytes(), INFO_METADATA)?;
         let sealed = std::fs::read(Self::metadata_path(&self.dir))?;
-        let plaintext = crypto::open(&metadata_key, &self.header.metadata_aad(), &sealed)
-            .map_err(|_| {
+        let plaintext =
+            crypto::open(&metadata_key, &self.header.metadata_aad(), &sealed).map_err(|_| {
                 VaultError::Corrupted(
                     "контейнер метаданных повреждён или был изменён извне".to_string(),
                 )
@@ -307,8 +304,11 @@ impl UnlockedVault {
     /// Шифрует и записывает метаданные на диск атомарно.
     pub fn save_metadata(&mut self) -> Result<()> {
         self.metadata.validate().map_err(VaultError::Corrupted)?;
-        let key =
-            crypto::derive_subkey(&self.master_key, self.header.vault_id.as_bytes(), INFO_METADATA)?;
+        let key = crypto::derive_subkey(
+            &self.master_key,
+            self.header.vault_id.as_bytes(),
+            INFO_METADATA,
+        )?;
         let plaintext = serde_json::to_vec(&self.metadata)?;
         let sealed = crypto::seal(&key, &self.header.metadata_aad(), &plaintext)?;
         paths::write_atomic(&Vault::metadata_path(&self.dir), &sealed)?;
@@ -388,7 +388,10 @@ mod tests {
             Vault::create_with_params(tmp.path(), "short", cheap()),
             Err(VaultError::WeakPassword(_))
         ));
-        assert!(!Vault::exists(tmp.path()), "неудачное создание не должно оставлять файлов");
+        assert!(
+            !Vault::exists(tmp.path()),
+            "неудачное создание не должно оставлять файлов"
+        );
     }
 
     #[test]
@@ -455,7 +458,9 @@ mod tests {
         create(tmp.path(), PASSWORD).lock();
 
         for _ in 0..3 {
-            let _ = Vault::open(tmp.path()).unwrap().unlock("wrong-password-attempt");
+            let _ = Vault::open(tmp.path())
+                .unwrap()
+                .unlock("wrong-password-attempt");
         }
         assert_eq!(Vault::open(tmp.path()).unwrap().attempts().failed, 3);
 
@@ -469,7 +474,9 @@ mod tests {
         create(tmp.path(), PASSWORD).lock();
 
         for _ in 0..5 {
-            let _ = Vault::open(tmp.path()).unwrap().unlock("wrong-password-attempt");
+            let _ = Vault::open(tmp.path())
+                .unwrap()
+                .unlock("wrong-password-attempt");
         }
 
         let opened = Vault::open(tmp.path()).unwrap();
@@ -588,8 +595,14 @@ mod tests {
 
         let raw = std::fs::read(Vault::metadata_path(tmp.path())).unwrap();
         let haystack = String::from_utf8_lossy(&raw);
-        assert!(!haystack.contains("Секретное"), "имя профиля не должно быть видно");
-        assert!(!haystack.contains("\"profiles\""), "структура не должна быть видна");
+        assert!(
+            !haystack.contains("Секретное"),
+            "имя профиля не должно быть видно"
+        );
+        assert!(
+            !haystack.contains("\"profiles\""),
+            "структура не должна быть видна"
+        );
 
         // открытый индекс хранит только идентификаторы
         let header = std::fs::read_to_string(Vault::header_path(tmp.path())).unwrap();

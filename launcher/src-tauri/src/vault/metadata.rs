@@ -156,7 +156,10 @@ pub struct ProfileMeta {
 impl ProfileMeta {
     pub fn validate(&self) -> Result<(), String> {
         if uuid::Uuid::parse_str(&self.id).is_err() {
-            return Err(format!("идентификатор профиля не является UUID: {}", self.id));
+            return Err(format!(
+                "идентификатор профиля не является UUID: {}",
+                self.id
+            ));
         }
         let name_len = self.name.chars().count();
         if name_len == 0 {
@@ -291,7 +294,10 @@ impl VaultMetadata {
                 .iter()
                 .any(|other| other.id == profile.id)
             {
-                return Err(format!("повторяющийся идентификатор профиля: {}", profile.id));
+                return Err(format!(
+                    "повторяющийся идентификатор профиля: {}",
+                    profile.id
+                ));
             }
         }
         Ok(())
@@ -340,7 +346,10 @@ mod tests {
 
     #[test]
     fn profile_kind_serializes_lowercase() {
-        assert_eq!(serde_json::to_string(&ProfileKind::Normal).unwrap(), "\"normal\"");
+        assert_eq!(
+            serde_json::to_string(&ProfileKind::Normal).unwrap(),
+            "\"normal\""
+        );
         assert_eq!(
             serde_json::to_string(&ProfileKind::Antidetect).unwrap(),
             "\"antidetect\""
@@ -387,7 +396,10 @@ mod tests {
         metadata
             .profiles
             .push(profile(UUID_A, &"я".repeat(MAX_PROFILE_NAME_LEN)));
-        assert!(metadata.validate().is_ok(), "64 кириллических символа — допустимо");
+        assert!(
+            metadata.validate().is_ok(),
+            "64 кириллических символа — допустимо"
+        );
     }
 
     #[test]
@@ -409,7 +421,10 @@ mod tests {
         };
         assert!(empty_host.validate().is_err());
 
-        let zero_port = ProxyConfig { port: 0, ..base.clone() };
+        let zero_port = ProxyConfig {
+            port: 0,
+            ..base.clone()
+        };
         assert!(zero_port.validate().is_err());
 
         let password_without_user = ProxyConfig {
@@ -452,12 +467,15 @@ mod tests {
         }
         .validate()
         .is_err());
-        assert!(Settings {
-            auto_lock_minutes: 0,
-            ..Settings::default()
-        }
-        .validate()
-        .is_ok(), "0 минут — автоблокировка выключена");
+        assert!(
+            Settings {
+                auto_lock_minutes: 0,
+                ..Settings::default()
+            }
+            .validate()
+            .is_ok(),
+            "0 минут — автоблокировка выключена"
+        );
     }
 
     #[test]

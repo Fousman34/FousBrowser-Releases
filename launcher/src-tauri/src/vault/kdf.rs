@@ -80,13 +80,8 @@ impl KdfParams {
 
     fn instance(&self) -> Result<Argon2<'static>> {
         self.validate()?;
-        let params = Params::new(
-            self.m_cost_kib,
-            self.t_cost,
-            self.p_cost,
-            Some(KEY_LEN),
-        )
-        .map_err(|_| VaultError::Corrupted("некорректные параметры Argon2id".to_string()))?;
+        let params = Params::new(self.m_cost_kib, self.t_cost, self.p_cost, Some(KEY_LEN))
+            .map_err(|_| VaultError::Corrupted("некорректные параметры Argon2id".to_string()))?;
         Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
     }
 }

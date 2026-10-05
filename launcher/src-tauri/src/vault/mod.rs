@@ -29,6 +29,7 @@
 
 pub mod attempts;
 pub mod crypto;
+pub mod cryptofs;
 pub mod error;
 pub mod header;
 pub mod kdf;
@@ -38,6 +39,7 @@ pub mod session;
 
 // Короткие имена для часто используемых типов.
 pub use attempts::{AttemptsState, MAX_ATTEMPTS_BEFORE_CONFIRMATION, WARN_AT_ATTEMPTS};
+pub use cryptofs::{ContainerStats, PlaintextState};
 pub use error::{Result, VaultError};
 pub use header::VaultHeader;
 pub use kdf::{check_password, KdfParams, PasswordReport};

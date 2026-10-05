@@ -35,7 +35,9 @@ pub fn validate_name(name: &str) -> Result<String> {
     let length = trimmed.chars().count();
 
     if length == 0 {
-        return Err(VaultError::Invalid("имя профиля не может быть пустым".into()));
+        return Err(VaultError::Invalid(
+            "имя профиля не может быть пустым".into(),
+        ));
     }
     if length > MAX_PROFILE_NAME_LEN {
         return Err(VaultError::Invalid(format!(
@@ -94,7 +96,9 @@ impl UnlockedVault {
         if let Err(error) = self.save_metadata() {
             // Откат: метаданные на диске остались прежними, значит и в памяти
             // запись держать нельзя — иначе список профилей разойдётся с файлом.
-            self.metadata_mut().profiles.retain(|item| item.id != profile.id);
+            self.metadata_mut()
+                .profiles
+                .retain(|item| item.id != profile.id);
             let _ = fs::remove_dir_all(self.profile_dir(&profile.id));
             return Err(error);
         }
@@ -103,7 +107,11 @@ impl UnlockedVault {
     }
 
     /// Клонирует профиль: те же настройки, новое зерно отпечатка.
-    pub fn clone_profile(&mut self, source_id: &str, new_name: Option<&str>) -> Result<ProfileMeta> {
+    pub fn clone_profile(
+        &mut self,
+        source_id: &str,
+        new_name: Option<&str>,
+    ) -> Result<ProfileMeta> {
         let source = self
             .metadata()
             .find(source_id)
@@ -115,7 +123,12 @@ impl UnlockedVault {
             None => validate_name(&format!("{} (копия)", source.name))?,
         };
 
-        self.create_profile(&name, source.kind, source.proxy.clone(), source.note.clone())
+        self.create_profile(
+            &name,
+            source.kind,
+            source.proxy.clone(),
+            source.note.clone(),
+        )
     }
 
     /// Меняет имя, тип и заметку профиля.
@@ -291,8 +304,8 @@ fn wipe_file(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::vault::kdf::KdfParams;
-    use crate::vault::session::Vault;
     use crate::vault::metadata::ProxyScheme;
+    use crate::vault::session::Vault;
 
     const PASSWORD: &str = "correct-horse-battery";
 
@@ -347,7 +360,10 @@ mod tests {
         let unlocked = Vault::open(tmp.path()).unwrap().unlock(PASSWORD).unwrap();
         let stored = unlocked.metadata().find(&profile.id).unwrap();
         assert_eq!(stored.name, "Постоянный");
-        assert_eq!(stored.proxy.as_ref().unwrap().password.as_deref(), Some("secret"));
+        assert_eq!(
+            stored.proxy.as_ref().unwrap().password.as_deref(),
+            Some("secret")
+        );
     }
 
     #[test]
@@ -364,7 +380,10 @@ mod tests {
             vault.create_profile(&long, ProfileKind::Normal, None, None),
             Err(VaultError::Invalid(_))
         ));
-        assert!(vault.profiles().is_empty(), "неудачное создание ничего не добавляет");
+        assert!(
+            vault.profiles().is_empty(),
+            "неудачное создание ничего не добавляет"
+        );
     }
 
     #[test]
@@ -373,10 +392,18 @@ mod tests {
         let mut vault = vault(tmp.path());
 
         let profile = vault
-            .create_profile("  с пробелами  ", ProfileKind::Normal, None, Some("   ".into()))
+            .create_profile(
+                "  с пробелами  ",
+                ProfileKind::Normal,
+                None,
+                Some("   ".into()),
+            )
             .unwrap();
         assert_eq!(profile.name, "с пробелами");
-        assert_eq!(profile.note, None, "заметка из пробелов должна стать пустой");
+        assert_eq!(
+            profile.note, None,
+            "заметка из пробелов должна стать пустой"
+        );
     }
 
     #[test]
@@ -384,10 +411,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut vault = vault(tmp.path());
 
-        let bad = ProxyConfig {
-            port: 0,
-            ..proxy()
-        };
+        let bad = ProxyConfig { port: 0, ..proxy() };
         assert!(matches!(
             vault.create_profile("Плохой", ProfileKind::Normal, Some(bad), None),
             Err(VaultError::Invalid(_))
@@ -399,7 +423,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut vault = vault(tmp.path());
         let source = vault
-            .create_profile("Исходный", ProfileKind::Antidetect, Some(proxy()), Some("заметка".into()))
+            .create_profile(
+                "Исходный",
+                ProfileKind::Antidetect,
+                Some(proxy()),
+                Some("заметка".into()),
+            )
             .unwrap();
 
         let clone = vault.clone_profile(&source.id, None).unwrap();
@@ -440,7 +469,12 @@ mod tests {
             .unwrap();
 
         let updated = vault
-            .update_profile(&profile.id, "Новое", ProfileKind::Antidetect, Some("пометка".into()))
+            .update_profile(
+                &profile.id,
+                "Новое",
+                ProfileKind::Antidetect,
+                Some("пометка".into()),
+            )
             .unwrap();
         assert_eq!(updated.name, "Новое");
         assert_eq!(updated.kind, ProfileKind::Antidetect);
@@ -463,7 +497,10 @@ mod tests {
             vault.update_profile(unknown, "Имя", ProfileKind::Normal, None),
             Err(VaultError::NotFound(_))
         ));
-        assert!(matches!(vault.delete_profile(unknown), Err(VaultError::NotFound(_))));
+        assert!(matches!(
+            vault.delete_profile(unknown),
+            Err(VaultError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -501,15 +538,22 @@ mod tests {
         assert_eq!(removed.id, profile.id);
         assert!(vault.profiles().is_empty());
         assert!(!profile_dir.exists());
-        assert!(!temp_dir.exists(), "расшифрованная копия стирается вместе с профилем");
+        assert!(
+            !temp_dir.exists(),
+            "расшифрованная копия стирается вместе с профилем"
+        );
     }
 
     #[test]
     fn delete_keeps_other_profiles_intact() {
         let tmp = tempfile::tempdir().unwrap();
         let mut vault = vault(tmp.path());
-        let first = vault.create_profile("Первый", ProfileKind::Normal, None, None).unwrap();
-        let second = vault.create_profile("Второй", ProfileKind::Normal, None, None).unwrap();
+        let first = vault
+            .create_profile("Первый", ProfileKind::Normal, None, None)
+            .unwrap();
+        let second = vault
+            .create_profile("Второй", ProfileKind::Normal, None, None)
+            .unwrap();
 
         vault.delete_profile(&first.id).unwrap();
 
@@ -522,7 +566,9 @@ mod tests {
     fn delete_survives_reload() {
         let tmp = tempfile::tempdir().unwrap();
         let mut vault = vault(tmp.path());
-        let profile = vault.create_profile("Временный", ProfileKind::Normal, None, None).unwrap();
+        let profile = vault
+            .create_profile("Временный", ProfileKind::Normal, None, None)
+            .unwrap();
         vault.delete_profile(&profile.id).unwrap();
         vault.lock();
 
@@ -560,11 +606,20 @@ mod tests {
 
     #[test]
     fn kind_and_scheme_parse_from_ui_strings() {
-        assert_eq!("Normal".parse::<ProfileKind>().unwrap(), ProfileKind::Normal);
-        assert_eq!("ANTIDETECT".parse::<ProfileKind>().unwrap(), ProfileKind::Antidetect);
+        assert_eq!(
+            "Normal".parse::<ProfileKind>().unwrap(),
+            ProfileKind::Normal
+        );
+        assert_eq!(
+            "ANTIDETECT".parse::<ProfileKind>().unwrap(),
+            ProfileKind::Antidetect
+        );
         assert!("другой".parse::<ProfileKind>().is_err());
 
-        assert_eq!("SOCKS5".parse::<ProxyScheme>().unwrap(), ProxyScheme::Socks5);
+        assert_eq!(
+            "SOCKS5".parse::<ProxyScheme>().unwrap(),
+            ProxyScheme::Socks5
+        );
         assert_eq!("https".parse::<ProxyScheme>().unwrap(), ProxyScheme::Https);
         assert!("ftp".parse::<ProxyScheme>().is_err());
     }
