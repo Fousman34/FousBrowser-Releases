@@ -43,6 +43,18 @@ pub enum VaultError {
     #[error("ошибка ввода-вывода: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("движок не установлен: {0}")]
+    EngineMissing(String),
+
+    #[error("движок не удалось запустить: {0}")]
+    EngineFailed(String),
+
+    #[error("профиль уже запущен: {0}")]
+    AlreadyRunning(String),
+
+    #[error("профиль не запущен: {0}")]
+    NotRunning(String),
+
     #[error("ошибка формата данных: {0}")]
     Json(#[from] serde_json::Error),
 

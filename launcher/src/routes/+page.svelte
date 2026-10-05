@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
   import TerminalText from '$lib/components/TerminalText.svelte';
   import TypedHint from '$lib/components/TypedHint.svelte';
   import ProfileForm from '$lib/components/ProfileForm.svelte';
@@ -38,13 +39,37 @@
   /** Строка состояния: что только что произошло. */
   let notice = $state('');
 
+  // --- запуск движков ---
+  /** Состояние запуска и данных каждого профиля. */
+  let runtimes = $state<api.RuntimeView[]>([]);
+  /** Какие движки установлены. */
+  let engines = $state<api.EngineStatus | null>(null);
+  /** Профиль, с которым сейчас работают (запуск или остановка). */
+  let engineBusy = $state('');
+  let stopAllBusy = $state(false);
+  /** Отчёт последней остановки всех профилей. */
+  let stopReport = $state<api.StopAllReport | null>(null);
+  let unlisten: (() => void) | undefined;
+
   const MIN = api.MIN_PASSWORD_LENGTH;
 
   onMount(() => {
     void refresh();
+    void loadEngines();
+
+    // Ядро сообщает о смене состояния профиля: браузер закрылся сам,
+    // данные зашифрованы, произошла ошибка. Ждать опроса интерфейсом
+    // для этого не нужно.
+    void listen<api.ProfileStateEvent>('profile://state', (event) => {
+      applyState(event.payload);
+    }).then((off) => {
+      unlisten = off;
+    });
+
     return () => {
       if (cooldownHandle) clearInterval(cooldownHandle);
       if (reportHandle) clearTimeout(reportHandle);
+      unlisten?.();
     };
   });
 
@@ -120,6 +145,7 @@
       report = null;
       phase = 'ready';
       await loadProfiles();
+      await loadRuntimes();
     } catch (error) {
       errorText = api.describeError(api.toCommandError(error));
     } finally {
@@ -137,6 +163,7 @@
       password = '';
       phase = 'ready';
       await loadProfiles();
+      await loadRuntimes();
     } catch (error) {
       const commandError = api.toCommandError(error);
       errorText = api.describeError(commandError);
@@ -179,6 +206,10 @@
     deleting = null;
     working = '';
     notice = '';
+    runtimes = [];
+    stopReport = null;
+    engineBusy = '';
+    stopAllBusy = false;
     await refresh();
   }
 
@@ -279,6 +310,140 @@
     }
   }
 
+  // --- движки ---------------------------------------------------------------
+
+  async function loadEngines() {
+    try {
+      engines = await api.engineStatus();
+    } catch {
+      engines = null;
+    }
+  }
+
+  async function loadRuntimes() {
+    try {
+      runtimes = await api.profileRuntimeList();
+    } catch {
+      runtimes = [];
+    }
+  }
+
+  /**
+   * Применяет событие ядра к состоянию профилей.
+   *
+   * Важно, что событие приходит и тогда, когда браузер закрыл сам
+   * пользователь: лаунчер обязан отразить это без перезапроса списка.
+   */
+  function applyState(payload: api.ProfileStateEvent) {
+    runtimes = runtimes.map((item) =>
+      item.profile_id === payload.profile_id
+        ? {
+            ...item,
+            running: payload.state === 'running' || payload.state === 'stopping',
+            pid: payload.pid ?? item.pid,
+            plaintext: payload.state === 'stopped' ? false : item.plaintext
+          }
+        : item
+    );
+
+    switch (payload.state) {
+      case 'running':
+        notice = `профиль запущен · pid ${payload.pid ?? '?'}`;
+        errorText = '';
+        break;
+      case 'stopping':
+        notice = 'останавливаю движок…';
+        break;
+      case 'stopped':
+        notice = 'профиль остановлен, данные зашифрованы';
+        void loadRuntimes();
+        break;
+      default:
+        errorText = payload.message ?? 'движок завершился с ошибкой';
+    }
+  }
+
+  function runtimeOf(profileId: string): api.RuntimeView | undefined {
+    return runtimes.find((item) => item.profile_id === profileId);
+  }
+
+  function engineInstalled(kind: api.ProfileKind): boolean {
+    if (!engines) return true;
+    return kind === 'antidetect' ? engines.antidetect_installed : engines.normal_installed;
+  }
+
+  const runningCount = $derived(runtimes.filter((item) => item.running).length);
+
+  /** Типы профилей, для которых нужен движок, но он не установлен. */
+  const missingEngines = $derived(
+    engines === null
+      ? []
+      : (['normal', 'antidetect'] as api.ProfileKind[]).filter(
+          (kind) =>
+            profiles.some((profile) => profile.kind === kind) && !engineInstalled(kind)
+        )
+  );
+
+  async function launchProfile(profile: api.ProfileView) {
+    if (engineBusy !== '' || stopAllBusy) return;
+    engineBusy = profile.id;
+    errorText = '';
+    notice = '';
+    stopReport = null;
+
+    try {
+      const runtime = await api.profileLaunch(profile.id);
+      notice = `профиль «${profile.name}» запущен · pid ${runtime.pid ?? '?'}`;
+      await loadRuntimes();
+    } catch (error) {
+      const commandError = api.toCommandError(error);
+      errorText =
+        commandError.kind === 'engine_missing'
+          ? `движок для этого профиля не установлен — ${commandError.message}`
+          : api.describeError(commandError);
+      await loadEngines();
+    } finally {
+      engineBusy = '';
+    }
+  }
+
+  async function stopProfile(profile: api.ProfileView) {
+    if (engineBusy !== '' || stopAllBusy) return;
+    engineBusy = profile.id;
+    errorText = '';
+    notice = '';
+
+    try {
+      await api.profileStop(profile.id);
+      notice = `профиль «${profile.name}» остановлен, данные зашифрованы`;
+      await loadRuntimes();
+    } catch (error) {
+      errorText = api.describeError(api.toCommandError(error));
+    } finally {
+      engineBusy = '';
+    }
+  }
+
+  async function stopAllProfiles() {
+    if (stopAllBusy || engineBusy !== '') return;
+    stopAllBusy = true;
+    errorText = '';
+    notice = '';
+
+    try {
+      stopReport = await api.profileStopAll();
+      notice =
+        stopReport.stopped.length > 0
+          ? `остановлено профилей: ${stopReport.stopped.length}`
+          : 'запущенных профилей не было';
+      await loadRuntimes();
+    } catch (error) {
+      errorText = api.describeError(api.toCommandError(error));
+    } finally {
+      stopAllBusy = false;
+    }
+  }
+
   function shorten(value: string): string {
     return value.length <= 46 ? value : `…${value.slice(-45)}`;
   }
@@ -286,6 +451,7 @@
 
 <div class="shell">
   <header class="bar">
+    <img class="logo" src="/fousbrowser.svg" alt="" aria-hidden="true" />
     <span class="accent">FousBrowser</span>
     <span class="faint">launcher</span>
     <span class="spacer"></span>
@@ -466,6 +632,15 @@
           <h1><TerminalText text="ПРОФИЛИ" speed={14} cursor={false} /></h1>
           <span class="faint small">{profiles.length} шт.</span>
           <span class="spacer"></span>
+          {#if runningCount > 0}
+            <button
+              class="danger"
+              onclick={stopAllProfiles}
+              disabled={stopAllBusy || engineBusy !== ''}
+            >
+              {stopAllBusy ? 'останавливаю все…' : `остановить все профили (${runningCount})`}
+            </button>
+          {/if}
           {#if panel === 'none'}
             <button class="primary" onclick={openCreate} disabled={working !== ''}>
               создать профиль
@@ -479,6 +654,25 @@
 
         {#if errorText}
           <p class="danger small">[x] {errorText}</p>
+        {/if}
+
+        {#if missingEngines.length > 0}
+          <p class="warn small">
+            [!] не установлен движок: {missingEngines
+              .map((kind) => api.PROFILE_KIND_LABELS[kind])
+              .join(', ')} — профили этого типа запустить нельзя, пока движок не установлен
+          </p>
+        {/if}
+
+        {#if stopReport && stopReport.failed.length > 0}
+          <div class="confirm">
+            <p class="danger small">
+              [x] не удалось остановить профилей: {stopReport.failed.length}
+            </p>
+            {#each stopReport.failed as failure (failure.profile_id)}
+              <p class="faint small">— {failure.profile_id.slice(0, 8)}: {failure.message}</p>
+            {/each}
+          </div>
         {/if}
 
         {#if profiles.length === 0}
@@ -502,6 +696,9 @@
                       ? `${api.PROXY_SCHEME_LABELS[profile.proxy.scheme]} ${profile.proxy.host}:${profile.proxy.port}`
                       : 'без прокси'}
                   </span>
+                  {#if runtimeOf(profile.id)?.running}
+                    <span class="badge running">работает · pid {runtimeOf(profile.id)?.pid}</span>
+                  {/if}
                   <span class="spacer"></span>
                   <span class="faint tiny">зерно {profile.seed.toString(16).padStart(8, '0')}</span>
                 </div>
@@ -510,7 +707,40 @@
                   <div class="faint small note">{profile.note}</div>
                 {/if}
 
+                {#if runtimeOf(profile.id)?.plaintext}
+                  <div class="data-state">
+                    <span class="warn small">
+                      данные расшифрованы: {runtimeOf(profile.id)?.plaintext_entries} файлов,
+                      {api.formatBytes(runtimeOf(profile.id)?.plaintext_bytes ?? 0)}
+                    </span>
+                    <button
+                      class="ghost"
+                      onclick={() => stopProfile(profile)}
+                      disabled={engineBusy !== '' || stopAllBusy}
+                    >
+                      зашифровать обратно
+                    </button>
+                  </div>
+                {/if}
+
                 <div class="actions">
+                  {#if runtimeOf(profile.id)?.running}
+                    <button
+                      class="primary"
+                      onclick={() => stopProfile(profile)}
+                      disabled={engineBusy !== '' || stopAllBusy}
+                    >
+                      {engineBusy === profile.id ? 'останавливаю…' : 'остановить'}
+                    </button>
+                  {:else}
+                    <button
+                      class="primary"
+                      onclick={() => launchProfile(profile)}
+                      disabled={engineBusy !== '' || stopAllBusy || !engineInstalled(profile.kind)}
+                    >
+                      {engineBusy === profile.id ? 'запуск…' : 'запустить'}
+                    </button>
+                  {/if}
                   <button class="ghost" onclick={() => openEdit(profile)} disabled={working !== ''}>
                     изменить
                   </button>
@@ -524,7 +754,7 @@
                   <button
                     class="ghost danger"
                     onclick={() => askDelete(profile)}
-                    disabled={working !== ''}
+                    disabled={working !== '' || runtimeOf(profile.id)?.running}
                   >
                     удалить
                   </button>
@@ -612,6 +842,15 @@
     border-top: 1px solid var(--line-soft);
   }
 
+  /* Значок проекта в шапке: векторный, поэтому резкий на любом экране.
+     Тот же знак, что у окна и на панели задач. */
+  .logo {
+    width: 20px;
+    height: 20px;
+    display: block;
+    flex: none;
+  }
+
   .spacer {
     flex: 1;
   }
@@ -696,6 +935,38 @@
 
   .note {
     margin-top: 6px;
+  }
+
+  /* Метка работы движка: не «пузырёк», а строка в терминальном стиле. */
+  .badge {
+    padding: 1px 7px;
+    border: 1px solid var(--line);
+    font-size: 0.82em;
+    letter-spacing: 0.06em;
+    color: var(--fg-dim);
+  }
+
+  .badge.running {
+    border-color: var(--ok);
+    color: var(--ok);
+  }
+
+  .data-state {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+  }
+
+  button.danger {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+
+  button.danger:hover:not(:disabled) {
+    background: rgba(248, 113, 113, 0.08);
+    border-color: var(--danger);
+    color: var(--danger);
   }
 
   .confirm {

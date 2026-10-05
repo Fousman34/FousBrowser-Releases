@@ -97,6 +97,10 @@ impl From<VaultError> for CommandError {
             VaultError::Io(_) => "io",
             VaultError::Json(_) => "json",
             VaultError::Crypto(_) => "crypto",
+            VaultError::EngineMissing(_) => "engine_missing",
+            VaultError::EngineFailed(_) => "engine_failed",
+            VaultError::AlreadyRunning(_) => "already_running",
+            VaultError::NotRunning(_) => "not_running",
         };
 
         let mut payload = Self::new(kind, error.to_string());
@@ -498,4 +502,456 @@ pub async fn profile_delete(
         vault.delete_profile(&profile_id)?;
         Ok(vault.profiles().len())
     })
+}
+
+// --- движки и запуск профилей ----------------------------------------------
+//
+// Что происходит при запуске профиля:
+//
+// 1. данные расшифровываются из контейнера во временный каталог;
+// 2. процесс движка запускается с `--user-data-dir` на этот каталог;
+// 3. в журнале `vault/index.json` появляется запись «работает».
+//
+// При остановке порядок обратный: сначала процесс закрывается (вежливо, затем
+// принудительно), и только потом данные шифруются обратно. Если запуск не
+// удался, расшифрованные данные немедленно возвращаются в контейнер: лаунчер
+// не оставляет открытых копий после неудачной попытки.
+
+use crate::engine::discovery::{self, Engine};
+use crate::engine::flags;
+use crate::engine::journal::{Journal, STATE_RUNNING, STATE_SEALING};
+use crate::engine::{EngineManager, RunningView, GRACEFUL_TIMEOUT};
+
+use tauri::{AppHandle, Emitter, Manager};
+
+/// Сколько ждать принудительного завершения после вежливого.
+const FORCED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Событие о смене состояния профиля: `profile://state`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileStateEvent {
+    pub profile_id: String,
+    /// `running`, `stopping`, `stopped`, `error`.
+    pub state: String,
+    pub pid: Option<u32>,
+    pub message: Option<String>,
+}
+
+fn emit_state(
+    app: &AppHandle,
+    profile_id: &str,
+    state: &str,
+    pid: Option<u32>,
+    message: Option<String>,
+) {
+    let payload = ProfileStateEvent {
+        profile_id: profile_id.to_string(),
+        state: state.to_string(),
+        pid,
+        message,
+    };
+    if let Err(error) = app.emit("profile://state", payload) {
+        // Интерфейс мог быть уже закрыт: это не повод прерывать остановку,
+        // иначе данные останутся расшифрованными.
+        eprintln!("не удалось отправить состояние профиля: {error}");
+    }
+}
+
+/// Состояние установленных движков.
+#[derive(Debug, Serialize)]
+pub struct EngineStatus {
+    pub normal_installed: bool,
+    pub normal_version: Option<String>,
+    pub antidetect_installed: bool,
+    pub antidetect_version: Option<String>,
+}
+
+fn describe_engine(kind: crate::vault::ProfileKind) -> (bool, Option<String>) {
+    match discovery::resolve(kind) {
+        Ok(engine) => (true, Some(engine.version)),
+        Err(_) => (false, None),
+    }
+}
+
+/// Что известно о запуске профиля и его данных.
+#[derive(Debug, Serialize)]
+pub struct RuntimeView {
+    pub profile_id: String,
+    pub running: bool,
+    pub pid: Option<u32>,
+    pub engine_version: Option<String>,
+    pub started_unix: Option<u64>,
+    /// Есть ли расшифрованная копия на диске.
+    pub plaintext: bool,
+    pub plaintext_entries: usize,
+    pub plaintext_bytes: u64,
+}
+
+fn runtime_of(
+    engines: &EngineManager,
+    state: &VaultState,
+    profile_id: &str,
+) -> CommandResult<RuntimeView> {
+    let running: Option<RunningView> = engines
+        .views()
+        .into_iter()
+        .find(|view| view.profile_id == profile_id);
+
+    let (plaintext, entries, bytes) = state
+        .with_unlocked(|vault| vault.plaintext_state(profile_id))
+        .transpose()?
+        .map(|value| match value {
+            crate::vault::PlaintextState::Absent => (false, 0, 0),
+            crate::vault::PlaintextState::Present { entries, bytes } => (true, entries, bytes),
+        })
+        .unwrap_or((false, 0, 0));
+
+    Ok(RuntimeView {
+        profile_id: profile_id.to_string(),
+        running: running.is_some(),
+        pid: running.as_ref().map(|view| view.pid),
+        engine_version: running.as_ref().map(|view| view.engine_version.clone()),
+        started_unix: running.as_ref().map(|view| view.started_unix),
+        plaintext,
+        plaintext_entries: entries,
+        plaintext_bytes: bytes,
+    })
+}
+
+/// Список установленных движков.
+#[tauri::command]
+pub async fn engine_status() -> CommandResult<EngineStatus> {
+    let (normal_installed, normal_version) = describe_engine(crate::vault::ProfileKind::Normal);
+    let (antidetect_installed, antidetect_version) =
+        describe_engine(crate::vault::ProfileKind::Antidetect);
+
+    Ok(EngineStatus {
+        normal_installed,
+        normal_version,
+        antidetect_installed,
+        antidetect_version,
+    })
+}
+
+/// Состояние запуска всех профилей хранилища.
+#[tauri::command]
+pub async fn profile_runtime_list(
+    state: State<'_, VaultState>,
+    engines: State<'_, EngineManager>,
+) -> CommandResult<Vec<RuntimeView>> {
+    let ids: Vec<String> = with_vault(&state, |vault| {
+        Ok(vault
+            .profiles()
+            .iter()
+            .map(|profile| profile.id.clone())
+            .collect())
+    })?;
+
+    let mut views = Vec::with_capacity(ids.len());
+    for id in ids {
+        views.push(runtime_of(&engines, &state, &id)?);
+    }
+    Ok(views)
+}
+
+/// Шифрует расшифрованную копию профиля обратно в контейнер.
+///
+/// Пустая копия пропускается: незачем перезаписывать контейнер ради нуля байт.
+fn seal_back(state: &VaultState, profile_id: &str) -> CommandResult<()> {
+    with_vault_mut(state, |vault| {
+        let temp = vault.temp_profile_dir(profile_id);
+        match vault.plaintext_state(profile_id)? {
+            crate::vault::PlaintextState::Absent => Ok(()),
+            crate::vault::PlaintextState::Present { .. } => {
+                vault.seal_profile(profile_id, &temp)?;
+                vault.discard_plaintext(profile_id)?;
+                Ok(())
+            }
+        }
+    })
+}
+
+/// Записывает состояние профиля в журнал.
+fn journal_set(vault_dir: &std::path::Path, view: &RunningView, state: &str) -> CommandResult<()> {
+    let mut journal = Journal::load(vault_dir);
+    journal.upsert(view.journal_entry(state));
+    journal.save(vault_dir)?;
+    Ok(())
+}
+
+fn journal_remove(vault_dir: &std::path::Path, profile_id: &str) -> CommandResult<()> {
+    let mut journal = Journal::load(vault_dir);
+    journal.remove(profile_id);
+    journal.save(vault_dir)?;
+    Ok(())
+}
+
+/// Запускает профиль: расшифровывает данные и стартует движок.
+#[tauri::command]
+pub async fn profile_launch(
+    profile_id: String,
+    app: AppHandle,
+    state: State<'_, VaultState>,
+    engines: State<'_, EngineManager>,
+) -> CommandResult<RuntimeView> {
+    if engines.is_running(&profile_id) {
+        return Err(CommandError::new(
+            "already_running",
+            format!("профиль {profile_id} уже запущен"),
+        ));
+    }
+
+    let profile = with_vault(&state, |vault| {
+        vault
+            .metadata()
+            .find(&profile_id)
+            .cloned()
+            .ok_or_else(|| CommandError::new("not_found", format!("профиль {profile_id}")))
+    })?;
+
+    let engine: Engine = discovery::resolve(profile.kind)?;
+    let temp_dir = with_vault(&state, |vault| Ok(vault.temp_profile_dir(&profile_id)))?;
+
+    // Прокси с логином и паролем требует локального моста: движки не умеют
+    // парольную аутентификацию через --proxy-server. Мост появится на этапе
+    // M6, до тех пор такой профиль честно отказывается запускаться, а не
+    // молча ходит напрямую.
+    let proxy_address = match &profile.proxy {
+        None => None,
+        Some(config) if flags::proxy_needs_bridge(config) => {
+            return Err(CommandError::new(
+                "proxy_bridge_required",
+                "у прокси задан логин или пароль: нужен локальный прокси-мост (этап M6)",
+            ))
+        }
+        Some(config) => Some(flags::proxy_address(config)),
+    };
+
+    let plaintext = with_vault(&state, |vault| Ok(vault.plaintext_state(&profile_id)?))?;
+    if plaintext == crate::vault::PlaintextState::Absent || !temp_dir.is_dir() {
+        with_vault_mut(&state, |vault| {
+            vault.unseal_profile(&profile_id, &temp_dir)?;
+            Ok(())
+        })?;
+    }
+
+    // Стартовая страница: своя, с одной строкой поиска. Если её не удалось
+    // подготовить, движок откроет свою страницу новой вкладки — это хуже,
+    // но прерывать из-за оформления запуск профиля нельзя.
+    let start_url = match crate::engine::startpage::ensure(&paths::app_root()?) {
+        Ok(page) => Some(crate::engine::startpage::file_url(&page)),
+        Err(error) => {
+            eprintln!("стартовая страница недоступна: {error}");
+            None
+        }
+    };
+
+    let plan = flags::build(
+        &profile,
+        &temp_dir,
+        proxy_address.as_deref(),
+        start_url.as_deref(),
+    );
+
+    let launched = match engines.launch(&engine, &plan, &profile_id, temp_dir.clone()) {
+        Ok(launched) => launched,
+        Err(error) => {
+            // Запуск не удался: открытая копия немедленно возвращается
+            // в контейнер, иначе она осталась бы на диске без присмотра.
+            if let Err(seal_error) = seal_back(&state, &profile_id) {
+                eprintln!("не удалось зашифровать данные после неудачного запуска: {seal_error:?}");
+            }
+            return Err(error.into());
+        }
+    };
+    let view = launched.view;
+
+    let vault_dir = paths::vault_dir()?;
+    journal_set(&vault_dir, &view, STATE_RUNNING)?;
+
+    // Окно профиля должно выглядеть как FousBrowser: своё имя и свой значок.
+    // Имя движка берётся из имени его файла, чтобы вырезать из заголовка
+    // ровно то название, под которым движок установлен.
+    let engine_stem = engine
+        .program
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default();
+    crate::engine::branding::start(view.pid, profile.name.clone(), engine_stem, launched.window);
+
+    emit_state(&app, &profile_id, "running", Some(view.pid), None);
+
+    runtime_of(&engines, &state, &profile_id)
+}
+
+/// Останавливает профиль и шифрует его данные обратно.
+#[tauri::command]
+pub async fn profile_stop(
+    profile_id: String,
+    app: AppHandle,
+    state: State<'_, VaultState>,
+    engines: State<'_, EngineManager>,
+) -> CommandResult<RuntimeView> {
+    if !engines.is_running(&profile_id) {
+        // Данные могли остаться расшифрованными после сбоя: возвращаем их
+        // в контейнер, даже если процесса уже нет.
+        seal_back(&state, &profile_id)?;
+        journal_remove(&paths::vault_dir()?, &profile_id)?;
+        emit_state(&app, &profile_id, "stopped", None, None);
+        return runtime_of(&engines, &state, &profile_id);
+    }
+
+    if let Some(view) = engines
+        .views()
+        .into_iter()
+        .find(|view| view.profile_id == profile_id)
+    {
+        // Отмечаем «шифруется»: если лаунчер упадёт в этот момент, при
+        // следующем запуске запись будет разобрана как осиротевшая.
+        journal_set(&paths::vault_dir()?, &view, STATE_SEALING)?;
+    }
+    emit_state(&app, &profile_id, "stopping", None, None);
+
+    let stopped = engines.stop(&profile_id, GRACEFUL_TIMEOUT, FORCED_TIMEOUT);
+
+    let result = match seal_back(&state, &profile_id) {
+        Ok(()) => {
+            journal_remove(&paths::vault_dir()?, &profile_id)?;
+            emit_state(
+                &app,
+                &profile_id,
+                "stopped",
+                stopped.as_ref().map(|view| view.pid),
+                None,
+            );
+            Ok(())
+        }
+        Err(error) => {
+            emit_state(
+                &app,
+                &profile_id,
+                "error",
+                stopped.as_ref().map(|view| view.pid),
+                Some(error.message.clone()),
+            );
+            Err(error)
+        }
+    };
+    result?;
+
+    runtime_of(&engines, &state, &profile_id)
+}
+
+/// Отчёт об остановке всех профилей.
+#[derive(Debug, Serialize)]
+pub struct StopAllReport {
+    pub stopped: Vec<String>,
+    pub failed: Vec<StopFailure>,
+}
+
+/// Профиль, который не удалось остановить.
+#[derive(Debug, Serialize)]
+pub struct StopFailure {
+    pub profile_id: String,
+    pub message: String,
+}
+
+/// Останавливает все профили: вежливая просьба всем сразу, затем ожидание.
+#[tauri::command]
+pub async fn profile_stop_all(
+    app: AppHandle,
+    state: State<'_, VaultState>,
+    engines: State<'_, EngineManager>,
+) -> CommandResult<StopAllReport> {
+    let ids = engines.ids();
+    let vault_dir = paths::vault_dir()?;
+
+    // Обращаемся ко всем профилям одновременно: браузеры закрываются
+    // параллельно, а не по очереди.
+    for id in &ids {
+        if let Some(view) = engines
+            .views()
+            .into_iter()
+            .find(|view| view.profile_id == *id)
+        {
+            let _ = journal_set(&vault_dir, &view, STATE_SEALING);
+        }
+        emit_state(&app, id, "stopping", None, None);
+        let _ = engines.request_close(id);
+    }
+
+    for id in &ids {
+        if engines.wait_exit(id, GRACEFUL_TIMEOUT).is_none() {
+            let _ = engines.kill(id);
+            let _ = engines.wait_exit(id, FORCED_TIMEOUT);
+        }
+    }
+
+    let mut report = StopAllReport {
+        stopped: Vec::new(),
+        failed: Vec::new(),
+    };
+
+    for id in ids {
+        match seal_back(&state, &id) {
+            Ok(()) => {
+                let _ = journal_remove(&vault_dir, &id);
+                emit_state(&app, &id, "stopped", None, None);
+                report.stopped.push(id);
+            }
+            Err(error) => {
+                emit_state(&app, &id, "error", None, Some(error.message.clone()));
+                report.failed.push(StopFailure {
+                    profile_id: id,
+                    message: error.message,
+                });
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// Разбирает завершившиеся профили: шифрует данные и обновляет журнал.
+///
+/// Вызывается по таймеру. Если хранилище заперто, шифровать нечем: запись
+/// остаётся в журнале, а расшифрованная копия будет разобрана при следующей
+/// разблокировке (этап M7).
+pub fn reap_and_finalize(app: &AppHandle) {
+    let engines = app.state::<EngineManager>();
+    let finished = engines.reap();
+    if finished.is_empty() {
+        return;
+    }
+
+    let state = app.state::<VaultState>();
+    let Ok(vault_dir) = paths::vault_dir() else {
+        return;
+    };
+
+    for view in finished {
+        if !state.is_unlocked() {
+            eprintln!(
+                "профиль {} завершился, но хранилище заперто: данные будут зашифрованы при разблокировке",
+                view.profile_id
+            );
+            continue;
+        }
+
+        match seal_back(&state, &view.profile_id) {
+            Ok(()) => {
+                let _ = journal_remove(&vault_dir, &view.profile_id);
+                emit_state(app, &view.profile_id, "stopped", Some(view.pid), None);
+            }
+            Err(error) => {
+                emit_state(
+                    app,
+                    &view.profile_id,
+                    "error",
+                    Some(view.pid),
+                    Some(error.message.clone()),
+                );
+            }
+        }
+    }
 }

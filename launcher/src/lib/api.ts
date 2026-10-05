@@ -57,6 +57,11 @@ export interface CommandError {
     | 'io'
     | 'json'
     | 'crypto'
+    | 'engine_missing'
+    | 'engine_failed'
+    | 'already_running'
+    | 'not_running'
+    | 'proxy_bridge_required'
     | 'unknown';
   message: string;
   seconds?: number | null;
@@ -204,6 +209,83 @@ export function profileDelete(profileId: string): Promise<number> {
   return invoke('profile_delete', { profileId });
 }
 
+// --- движки и запуск профилей ----------------------------------------------
+
+/** Какие движки установлены на этом устройстве. */
+export interface EngineStatus {
+  normal_installed: boolean;
+  normal_version: string | null;
+  antidetect_installed: boolean;
+  antidetect_version: string | null;
+}
+
+/** Что известно о запуске профиля и состоянии его данных на диске. */
+export interface RuntimeView {
+  profile_id: string;
+  running: boolean;
+  pid: number | null;
+  engine_version: string | null;
+  started_unix: number | null;
+  /** Есть ли расшифрованная копия данных на диске. */
+  plaintext: boolean;
+  plaintext_entries: number;
+  plaintext_bytes: number;
+}
+
+/** Смена состояния профиля, приходящая из ядра событием `profile://state`. */
+export interface ProfileStateEvent {
+  profile_id: string;
+  state: 'running' | 'stopping' | 'stopped' | 'error';
+  pid: number | null;
+  message: string | null;
+}
+
+export interface StopFailure {
+  profile_id: string;
+  message: string;
+}
+
+export interface StopAllReport {
+  stopped: string[];
+  failed: StopFailure[];
+}
+
+export function engineStatus(): Promise<EngineStatus> {
+  return invoke('engine_status');
+}
+
+export function profileRuntimeList(): Promise<RuntimeView[]> {
+  return invoke('profile_runtime_list');
+}
+
+/** Расшифровывает данные профиля и запускает движок. */
+export function profileLaunch(profileId: string): Promise<RuntimeView> {
+  return invoke('profile_launch', { profileId });
+}
+
+/** Закрывает движок и шифрует данные профиля обратно. */
+export function profileStop(profileId: string): Promise<RuntimeView> {
+  return invoke('profile_stop', { profileId });
+}
+
+/** Одна кнопка: закрыть все движки и зашифровать все данные. */
+export function profileStopAll(): Promise<StopAllReport> {
+  return invoke('profile_stop_all');
+}
+
+/** Человекочитаемый размер: 1536 → «1,5 КиБ». */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} Б`;
+  const units = ['КиБ', 'МиБ', 'ГиБ'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value < 10 ? 1 : 0).replace('.', ',')} ${units[unit]}`;
+}
+
 /**
  * Приводит любое исключение к `CommandError`.
  *
@@ -243,6 +325,16 @@ export function describeError(error: CommandError): string {
       return `хранилище повреждено: ${error.message}`;
     case 'locked':
       return 'хранилище заблокировано';
+    case 'engine_missing':
+      return `движок не установлен: ${error.message}`;
+    case 'engine_failed':
+      return `движок не запустился: ${error.message}`;
+    case 'already_running':
+      return 'этот профиль уже запущен';
+    case 'not_running':
+      return 'этот профиль не запущен';
+    case 'proxy_bridge_required':
+      return error.message;
     case 'invalid':
       return error.message;
     default:

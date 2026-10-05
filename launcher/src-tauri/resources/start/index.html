@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FousBrowser</title>
+    <link rel="icon" href="logo.svg" />
+    <style>
+      /* Стартовая страница профиля: только знак проекта и одна строка поиска.
+         Ничего чужого на экране нет — поиск уходит в Google, но его значков
+         и заголовков здесь не видно. */
+      @font-face {
+        font-family: 'JetBrains Mono';
+        src: url('JetBrainsMono-Variable.ttf') format('truetype-variations');
+        font-weight: 100 800;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      :root {
+        --bg: #0a0c0a;
+        --fg: #cbd8d2;
+        --faint: #47534e;
+        --accent: #22d3ee;
+        --ok: #34d399;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+
+      main {
+        width: min(560px, 86vw);
+        padding: 24px 0 48px;
+        text-align: center;
+        animation: appear 220ms ease both;
+      }
+
+      @keyframes appear {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      .logo {
+        width: 96px;
+        height: 96px;
+        display: block;
+        margin: 0 auto;
+        user-select: none;
+        -webkit-user-drag: none;
+      }
+
+      h1 {
+        margin: 20px 0 0;
+        font-size: 1.35rem;
+        font-weight: 600;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+      }
+
+      .sub {
+        margin: 10px 0 40px;
+        color: var(--faint);
+        font-size: 0.72rem;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+      }
+
+      form {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 2px;
+        border-bottom: 1px solid var(--faint);
+        transition: border-color 120ms ease;
+      }
+
+      form:focus-within {
+        border-color: var(--accent);
+      }
+
+      .prompt {
+        color: var(--accent);
+        font-size: 1rem;
+      }
+
+      input {
+        flex: 1;
+        border: 0;
+        outline: 0;
+        background: none;
+        color: var(--fg);
+        font: inherit;
+        font-size: 1rem;
+        letter-spacing: 0.04em;
+        caret-color: var(--accent);
+      }
+
+      input::placeholder {
+        color: var(--faint);
+        letter-spacing: normal;
+      }
+
+      .hint {
+        margin: 14px 0 0;
+        color: var(--faint);
+        font-size: 0.7rem;
+        letter-spacing: 0.14em;
+      }
+
+      .hint .key {
+        color: var(--ok);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        main {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img class="logo" src="logo.svg" alt="" />
+      <h1>FousBrowser</h1>
+      <p class="sub">зашифрованный профиль</p>
+
+      <form action="https://www.google.com/search" method="get" autocomplete="off">
+        <span class="prompt" aria-hidden="true">&gt;</span>
+        <input
+          type="text"
+          name="q"
+          placeholder="поиск"
+          aria-label="поиск"
+          autofocus
+          spellcheck="false"
+        />
+      </form>
+
+      <p class="hint"><span class="key">Enter</span> — поиск</p>
+    </main>
+  </body>
+</html>

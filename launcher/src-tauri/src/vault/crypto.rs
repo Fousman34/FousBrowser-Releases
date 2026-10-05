@@ -165,6 +165,26 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    fn cipher_speed_diagnostic() {
+        // Диагностика скорости: `cargo test --lib cipher_speed -- --ignored --nocapture`
+        const MIB: usize = 1024 * 1024;
+        let key = [7u8; KEY_LEN];
+        let data = vec![0u8; MIB];
+        let chunks = 40;
+
+        let started = std::time::Instant::now();
+        for _ in 0..chunks {
+            seal(&key, b"fousbrowser/diagnostic", &data).unwrap();
+        }
+        let elapsed = started.elapsed();
+        eprintln!(
+            "шифрование {chunks} МиБ за {elapsed:?} — {:.2} МиБ/с",
+            chunks as f64 / elapsed.as_secs_f64()
+        );
+    }
+
+    #[test]
     fn subkeys_are_domain_separated() {
         let master = [9u8; KEY_LEN];
         let salt = b"vault-salt";

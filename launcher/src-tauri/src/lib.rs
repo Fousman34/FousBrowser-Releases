@@ -3,26 +3,44 @@
 //! Лаунчер — не браузер. Он управляет зашифрованными профилями, запускает
 //! под ними браузерные движки, шифрует данные на диске и проверяет обновления.
 //!
-//! Этап M1: хранилище (Argon2id, XChaCha20-Poly1305, метаданные, вход).
-//! Этап M3: профили — создание, клонирование, правка, удаление, прокси.
+//! Этапы: M1 — хранилище, M3 — профили, M4 — шифрование данных профиля,
+//! M5 — запуск и остановка движков.
 
 mod commands;
+
+/// Поиск, запуск и остановка браузерных движков.
+pub mod engine;
 
 /// Определение пользовательских каталогов.
 pub mod paths;
 
-/// Шифрованное хранилище: ключи, метаданные, профили.
-///
-/// Модуль публичный: это ядро лаунчера, и часть его поверхности
-/// (`profiles_dir`, `temp_dir`, `random_seed`, `find`) начинает
-/// использоваться на этапах M3–M5.
+/// Шифрованное хранилище: ключи, метаданные, профили, данные профилей.
 pub mod vault;
+
+use std::time::Duration;
+
+/// Как часто проверять, не закрылся ли браузер.
+const REAP_INTERVAL: Duration = Duration::from_secs(2);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(commands::VaultState::default())
+        .manage(engine::EngineManager::default())
+        .setup(|app| {
+            // Сторож: как только браузер закрылся (пользователь нажал «выход»),
+            // данные профиля шифруются обратно. Интерфейс замораживать нельзя,
+            // поэтому проверка идёт по таймеру в отдельной задаче.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(REAP_INTERVAL).await;
+                    commands::reap_and_finalize(&handle);
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::password_report,
             commands::vault_status,
@@ -38,6 +56,11 @@ pub fn run() {
             commands::profile_update,
             commands::profile_set_proxy,
             commands::profile_delete,
+            commands::engine_status,
+            commands::profile_runtime_list,
+            commands::profile_launch,
+            commands::profile_stop,
+            commands::profile_stop_all,
         ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить FousBrowser");

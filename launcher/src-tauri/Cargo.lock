@@ -1194,6 +1194,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "uuid",
  "zeroize",
 ]
