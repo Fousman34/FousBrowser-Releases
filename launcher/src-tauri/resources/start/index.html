@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FousBrowser</title>
     <link rel="icon" href="logo.svg" />
+    <script src="page.js" defer></script>
     <style>
       /* Стартовая страница профиля: только знак проекта и одна строка поиска.
          Ничего чужого на экране нет — поиск уходит в Google, но его значков
@@ -43,13 +44,47 @@
         display: grid;
         place-items: center;
         overflow: hidden;
+        isolation: isolate;
       }
+
+      .ambient {
+        position: fixed;
+        inset: -25%;
+        z-index: -2;
+        pointer-events: none;
+        background: radial-gradient(ellipse at 28% 40%, #734fa528, transparent 40%),
+          radial-gradient(ellipse at 72% 65%, #b3554920, transparent 40%);
+        animation: drift 24s ease-in-out infinite alternate;
+      }
+      .grid {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        opacity: .18;
+        background-image: linear-gradient(#887b9624 1px, transparent 1px),
+          linear-gradient(90deg, #887b9624 1px, transparent 1px);
+        background-size: 64px 64px;
+        mask-image: radial-gradient(ellipse at center, #000, transparent 72%);
+      }
+      .clock { margin-bottom: 32px; animation: appear 600ms ease both; }
+      time { font-size: clamp(2rem, 5vw, 3.5rem); font-weight: 200; letter-spacing: -.06em; font-variant-numeric: tabular-nums; }
+      .date { margin-top: 4px; color: var(--faint); font-size: .72rem; }
+      .emblem { position: relative; width: 128px; height: 128px; margin: auto; display: grid; place-items: center; }
+      .emblem::before, .emblem::after {
+        content: ''; position: absolute; inset: 0; border: 1px solid #b79aff24;
+        border-top-color: var(--accent); border-radius: 50%;
+        animation: orbit 22s linear infinite;
+      }
+      .emblem::after { inset: -10px; border-color: #ff927c12; border-bottom-color: #ff927c88; animation-direction: reverse; animation-duration: 34s; }
+      @keyframes orbit { to { transform: rotate(360deg); } }
+      @keyframes drift { to { transform: translate(6%, -4%) rotate(8deg); } }
 
       main {
         width: min(560px, 86vw);
         padding: 24px 0 48px;
         text-align: center;
-        animation: appear 220ms ease both;
+        animation: appear 700ms cubic-bezier(.2,.7,.3,1) both;
       }
 
       @keyframes appear {
@@ -95,13 +130,17 @@
         gap: 10px;
         padding: 6px 2px;
         border-bottom: 1px solid var(--faint);
-        transition: border-color 120ms ease;
+        border: 1px solid #887b9644;
+        border-radius: 16px;
+        transition: border-color 220ms ease, box-shadow 220ms ease, transform 220ms ease;
         background: #1b152266;
         padding: 18px 20px;
       }
 
       form:focus-within {
         border-color: var(--accent);
+        box-shadow: 0 0 0 4px #b79aff0b, 0 12px 48px #0003;
+        transform: translateY(-2px);
       }
 
       .prompt {
@@ -137,11 +176,11 @@
       .hint .key {
         color: var(--ok);
       }
+      .footer { position: fixed; bottom: 22px; font-size: .65rem; letter-spacing: .14em; color: var(--faint); }
+      @media (max-height: 620px) { .clock { margin-bottom: 16px; } .emblem { width: 96px; height: 96px; } .sub { margin-bottom: 24px; } .footer { display: none; } }
 
       @media (prefers-reduced-motion: reduce) {
-        main, .logo {
-          animation: none;
-        }
+        *, *::before, *::after { animation: none !important; transition: none !important; }
       }
       @keyframes float {
         0%, 100% { transform: translateY(0); }
@@ -150,8 +189,11 @@
     </style>
   </head>
   <body>
+    <div class="ambient" aria-hidden="true"></div>
+    <div class="grid" aria-hidden="true"></div>
     <main>
-      <img class="logo" src="logo.svg" alt="" />
+      <div class="clock"><time aria-label="текущее время"></time><p class="date"></p></div>
+      <div class="emblem"><img class="logo" src="logo.svg" alt="" /></div>
       <h1>FousBrowser</h1>
       <p class="sub">ваше пространство в сети</p>
 
@@ -167,7 +209,8 @@
         />
       </form>
 
-      <p class="hint"><span class="key">Enter</span> — поиск</p>
+      <p class="hint"><span class="key">Enter</span> — поиск · <span class="key">/</span> — фокус</p>
     </main>
+    <span class="footer">FousBrowser · ваше пространство в сети</span>
   </body>
 </html>

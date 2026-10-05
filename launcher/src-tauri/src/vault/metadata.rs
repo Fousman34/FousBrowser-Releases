@@ -151,6 +151,13 @@ pub struct ProfileMeta {
     /// Версия движка, на которой профиль запускался в последний раз.
     pub engine_version: Option<String>,
     pub note: Option<String>,
+    /// Older profiles restore tabs by default; included in encrypted exports.
+    #[serde(default = "default_restore_tabs")]
+    pub restore_tabs: bool,
+}
+
+pub fn default_restore_tabs() -> bool {
+    true
 }
 
 impl ProfileMeta {
@@ -308,6 +315,14 @@ impl VaultMetadata {
 mod tests {
     use super::*;
 
+    #[test]
+    fn old_profiles_restore_tabs_by_default() {
+        let mut json = serde_json::to_value(profile(UUID_A, "Existing")).unwrap();
+        json.as_object_mut().unwrap().remove("restore_tabs");
+        let existing: ProfileMeta = serde_json::from_value(json).unwrap();
+        assert!(existing.restore_tabs);
+    }
+
     fn profile(id: &str, name: &str) -> ProfileMeta {
         ProfileMeta {
             id: id.to_string(),
@@ -317,6 +332,7 @@ mod tests {
             proxy: None,
             created_unix: 0,
             engine_version: None,
+            restore_tabs: true,
             note: None,
         }
     }

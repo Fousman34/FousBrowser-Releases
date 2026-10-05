@@ -74,6 +74,17 @@ impl UnlockedVault {
         proxy: Option<ProxyConfig>,
         note: Option<String>,
     ) -> Result<ProfileMeta> {
+        self.create_profile_with_tabs(name, kind, proxy, note, true)
+    }
+
+    pub fn create_profile_with_tabs(
+        &mut self,
+        name: &str,
+        kind: ProfileKind,
+        proxy: Option<ProxyConfig>,
+        note: Option<String>,
+        restore_tabs: bool,
+    ) -> Result<ProfileMeta> {
         let profile = ProfileMeta {
             id: uuid::Uuid::new_v4().to_string(),
             name: validate_name(name)?,
@@ -85,6 +96,7 @@ impl UnlockedVault {
             created_unix: super::unix_now(),
             engine_version: None,
             note: normalize_note(note),
+            restore_tabs,
         };
         profile.validate().map_err(VaultError::Invalid)?;
 
@@ -123,11 +135,12 @@ impl UnlockedVault {
             None => validate_name(&format!("{} (копия)", source.name))?,
         };
 
-        self.create_profile(
+        self.create_profile_with_tabs(
             &name,
             source.kind,
             source.proxy.clone(),
             source.note.clone(),
+            source.restore_tabs,
         )
     }
 
@@ -138,6 +151,22 @@ impl UnlockedVault {
         name: &str,
         kind: ProfileKind,
         note: Option<String>,
+    ) -> Result<ProfileMeta> {
+        let restore_tabs = self
+            .metadata()
+            .find(id)
+            .ok_or_else(|| VaultError::NotFound(format!("профиль {id}")))?
+            .restore_tabs;
+        self.update_profile_with_tabs(id, name, kind, note, restore_tabs)
+    }
+
+    pub fn update_profile_with_tabs(
+        &mut self,
+        id: &str,
+        name: &str,
+        kind: ProfileKind,
+        note: Option<String>,
+        restore_tabs: bool,
     ) -> Result<ProfileMeta> {
         let name = validate_name(name)?;
 
@@ -157,6 +186,7 @@ impl UnlockedVault {
             profile.name = name;
             profile.kind = kind;
             profile.note = note;
+            profile.restore_tabs = restore_tabs;
         }
 
         if let Err(error) = self.save_metadata() {
@@ -164,6 +194,7 @@ impl UnlockedVault {
                 profile.name = previous.name;
                 profile.kind = previous.kind;
                 profile.note = previous.note;
+                profile.restore_tabs = previous.restore_tabs;
             }
             return Err(error);
         }
@@ -346,6 +377,28 @@ mod tests {
         assert_eq!(profile.name, "Рабочий");
         assert_ne!(profile.seed, 0, "зерно отпечатка не может быть нулевым");
         assert!(vault.profile_dir(&profile.id).is_dir());
+    }
+
+    #[test]
+    fn tab_settings_survive_update_clone_and_unlock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut vault = vault(tmp.path());
+        let p = vault
+            .create_profile_with_tabs("Tabs", ProfileKind::Normal, None, None, false)
+            .unwrap();
+        let renamed = vault
+            .update_profile(&p.id, "Renamed", ProfileKind::Normal, None)
+            .unwrap();
+        assert!(!renamed.restore_tabs);
+        let clone = vault.clone_profile(&p.id, Some("Copy")).unwrap();
+        assert!(!clone.restore_tabs);
+        vault
+            .update_profile_with_tabs(&p.id, "Renamed", ProfileKind::Normal, None, true)
+            .unwrap();
+        drop(vault);
+        let reopened = Vault::open(tmp.path()).unwrap().unlock(PASSWORD).unwrap();
+        assert!(reopened.metadata().find(&p.id).unwrap().restore_tabs);
+        assert!(!reopened.metadata().find(&clone.id).unwrap().restore_tabs);
     }
 
     #[test]

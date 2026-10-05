@@ -1,0 +1,23 @@
+[
+  {
+    "tag_name": "antidetect-v150.0.7871.186",
+    "draft": false,
+    "prerelease": false,
+    "body": "Движок Antidetect на основе ungoogled-chromium 150.0.7871.186 с подменой отпечатка (Фаза A: зеркалирование готовой сборки, подписанной нашим ключом).",
+    "html_url": "https://github.com/Fousman34/FousBrowser-Releases/releases/tag/antidetect-v150.0.7871.186",
+    "assets": [
+      {
+        "name": "antidetect-win64.zip",
+        "browser_download_url": "https://github.com/Fousman34/FousBrowser-Releases/releases/download/antidetect-v150.0.7871.186/antidetect-win64.zip"
+      },
+      {
+        "name": "SHA256SUMS",
+        "browser_download_url": "https://github.com/Fousman34/FousBrowser-Releases/releases/download/antidetect-v150.0.7871.186/SHA256SUMS"
+      },
+      {
+        "name": "SHA256SUMS.asc",
+        "browser_download_url": "https://github.com/Fousman34/FousBrowser-Releases/releases/download/antidetect-v150.0.7871.186/SHA256SUMS.asc"
+      }
+    ]
+  }
+]

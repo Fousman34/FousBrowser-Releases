@@ -195,8 +195,36 @@ pub fn releases_url() -> String {
     match std::env::var(RELEASES_URL_ENV) {
         Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
         _ => format!(
-            "https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=20"
+            "https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=100"
         ),
+    }
+}
+
+/// Public mirror avoids GitHub's shared-IP unauthenticated API quota.
+pub const ANTIDETECT_MIRROR_URL: &str = "https://raw.githubusercontent.com/Fousman34/FousBrowser-Releases/main/browsers/antidetect/releases.json";
+const EMBEDDED_RELEASES: &str = include_str!("../../../../browsers/antidetect/releases.json");
+
+fn antidetect_source() -> UpdateResult<String> {
+    // An explicitly configured source must never silently switch repositories.
+    let allow_fallback = !std::env::var(RELEASES_URL_ENV).is_ok_and(|url| !url.trim().is_empty());
+    antidetect_source_with(&releases_url(), allow_fallback, download::fetch_text)
+}
+
+fn antidetect_source_with(
+    primary_url: &str,
+    allow_fallback: bool,
+    mut fetch: impl FnMut(&str) -> UpdateResult<String>,
+) -> UpdateResult<String> {
+    let primary = fetch(primary_url);
+    if !allow_fallback {
+        return primary;
+    }
+    match primary {
+        Ok(text) => Ok(text),
+        Err(error) => {
+            eprintln!("GitHub API: {error}; используется резервный манифест");
+            Ok(fetch(ANTIDETECT_MIRROR_URL).unwrap_or_else(|_| EMBEDDED_RELEASES.to_string()))
+        }
     }
 }
 
@@ -213,7 +241,7 @@ pub fn check(channel: Channel) -> UpdateResult<Option<Release>> {
             decide(channel, platform, current.as_deref(), Some(&manifest), None)
         }
         Channel::Antidetect => {
-            let releases = download::fetch_text(&releases_url())?;
+            let releases = antidetect_source()?;
             decide(channel, platform, current.as_deref(), None, Some(&releases))
         }
     }
@@ -241,7 +269,7 @@ pub fn install_version(
             channel::normal_release(&manifest, platform, None)?
         }
         Channel::Antidetect => {
-            let releases = download::fetch_text(&releases_url())?;
+            let releases = antidetect_source()?;
             channel::antidetect_release(&releases, platform, None)?
         }
     }
@@ -309,6 +337,31 @@ pub fn installed_version(browsers_root: &Path, channel: Channel) -> UpdateResult
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_failures_use_mirror_or_pinned_metadata_but_custom_sources_do_not() {
+        let from_mirror = antidetect_source_with("primary", true, |url| {
+            if url == ANTIDETECT_MIRROR_URL {
+                Ok(EMBEDDED_RELEASES.into())
+            } else {
+                Err(UpdateError::Network("quota".into()))
+            }
+        })
+        .unwrap();
+        assert_eq!(from_mirror, EMBEDDED_RELEASES);
+        let pinned = antidetect_source_with("primary", true, |_| {
+            Err(UpdateError::Network("offline".into()))
+        })
+        .unwrap();
+        assert_eq!(pinned, EMBEDDED_RELEASES);
+        let mut calls = 0;
+        assert!(antidetect_source_with("custom", false, |_| {
+            calls += 1;
+            Err(UpdateError::Network("offline".into()))
+        })
+        .is_err());
+        assert_eq!(calls, 1);
+    }
 
     #[test]
     fn engine_directories_are_where_the_discovery_expects_them() {

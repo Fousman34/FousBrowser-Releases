@@ -8,8 +8,9 @@
 //!
 //! Лаунчер не поднимает ради страницы веб-сервер: страница статична, а
 //! лишний слушающий сокет — лишняя поверхность атаки. Файлы кладутся в
-//! пользовательский каталог данных (`start/`) и открываются движком как
-//! `file://`. Содержимое встроено в исполняемый файл, поэтому установка не
+//! пользовательский каталог данных (`start/`) и загружаются как расширение
+//! Manifest V3 с chrome_url_overrides.newtab, без разрешений на сайты.
+//! Содержимое встроено в исполняемый файл, поэтому установка не
 //! зависит от того, что лежит рядом с ним.
 //!
 //! Запись идемпотентна: файл перезаписывается только если содержимое
@@ -23,6 +24,8 @@ use crate::vault::Result;
 
 /// Разметка страницы.
 const PAGE: &str = include_str!("../../resources/start/index.html");
+const SCRIPT: &str = include_str!("../../resources/start/page.js");
+const MANIFEST: &str = include_str!("../../resources/start/manifest.json");
 
 /// Знак проекта (тот же, что в интерфейсе и в значке приложения).
 const LOGO: &str = include_str!("../../resources/start/logo.svg");
@@ -33,6 +36,24 @@ const FONT: &[u8] = include_bytes!("../../../static/fonts/JetBrainsMono-Variable
 /// Имя файла шрифта рядом со страницей.
 const FONT_FILE: &str = "JetBrainsMono-Variable.ttf";
 
+pub fn has_saved_session(profile_root: &Path) -> bool {
+    let default = profile_root.join("Default");
+    let sessions = fs::read_dir(default.join("Sessions"));
+    if let Ok(entries) = sessions {
+        if entries.flatten().any(|entry| {
+            entry.file_name().to_string_lossy().starts_with("Session_")
+                && entry
+                    .metadata()
+                    .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+        }) {
+            return true;
+        }
+    }
+    ["Last Session", "Current Session"].iter().any(|name| {
+        fs::metadata(default.join(name)).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+    })
+}
+
 /// Готовит страницу в каталоге данных и возвращает путь к `index.html`.
 pub fn ensure(app_root: &Path) -> Result<PathBuf> {
     let dir = app_root.join("start");
@@ -40,6 +61,12 @@ pub fn ensure(app_root: &Path) -> Result<PathBuf> {
 
     write_if_changed(&dir.join("index.html"), PAGE.as_bytes())?;
     write_if_changed(&dir.join("logo.svg"), LOGO.as_bytes())?;
+    write_if_changed(&dir.join("page.js"), SCRIPT.as_bytes())?;
+    write_if_changed(&dir.join("manifest.json"), MANIFEST.as_bytes())?;
+    write_if_changed(
+        &dir.join("icon.png"),
+        include_bytes!("../../icons/128x128.png"),
+    )?;
     write_if_changed(&dir.join(FONT_FILE), FONT)?;
 
     Ok(dir.join("index.html"))
@@ -99,6 +126,21 @@ pub fn file_url(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newtab_extension_has_no_site_or_browser_permissions() {
+        let manifest: serde_json::Value = serde_json::from_str(MANIFEST).unwrap();
+        assert_eq!(manifest["manifest_version"], 3);
+        assert_eq!(manifest["chrome_url_overrides"]["newtab"], "index.html");
+        assert!(manifest.get("permissions").is_none());
+        assert!(manifest.get("host_permissions").is_none());
+        assert!(manifest["key"].as_str().unwrap().len() > 100);
+        let tmp = tempfile::tempdir().unwrap();
+        ensure(tmp.path()).unwrap();
+        for file in ["manifest.json", "page.js", "icon.png"] {
+            assert!(tmp.path().join("start").join(file).is_file());
+        }
+    }
 
     #[test]
     fn page_is_prepared_once_and_reused() {

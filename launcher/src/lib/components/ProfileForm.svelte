@@ -30,6 +30,7 @@
   let name = $state(initial?.name ?? '');
   let kind = $state<api.ProfileKind>(initial?.kind ?? 'normal');
   let note = $state(initial?.note ?? '');
+  let restoreTabs = $state(initial?.restore_tabs ?? true);
 
   let useProxy = $state(Boolean(initial?.proxy));
   let scheme = $state<api.ProxyScheme>(initial?.proxy?.scheme ?? 'socks5');
@@ -92,7 +93,7 @@
       };
     }
 
-    onsubmit({ name: trimmed, kind, proxy, note: note.trim() || null });
+    onsubmit({ name: trimmed, kind, proxy, note: note.trim() || null, restore_tabs: restoreTabs });
   }
 </script>
 
@@ -152,6 +153,14 @@
         </button>
       {/each}
     </div>
+  </div>
+
+  <div class="field">
+    <label class="toggle">
+      <input type="checkbox" bind:checked={restoreTabs} disabled={busy} />
+      <span>продолжать с открытых вкладок</span>
+    </label>
+    <p class="faint">Включено: вкладки и окна восстанавливаются при запуске профиля. Выключено: используются настройки запуска самого браузера. Новая вкладка — страница FousBrowser.</p>
   </div>
 
   <div class="field">
@@ -296,7 +305,7 @@
   .row button.selected {
     border-color: var(--accent);
     color: var(--accent);
-    background: rgba(34, 211, 238, 0.07);
+    background: rgba(183, 154, 255, 0.08);
   }
 
   .proxy {

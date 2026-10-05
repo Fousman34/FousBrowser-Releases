@@ -65,13 +65,12 @@ pub struct LaunchPlan {
 ///
 /// `proxy_address` — адрес, который можно показать в командной строке:
 /// либо сам прокси (если он без аутентификации), либо локальный мост.
-/// `start_url` — наша стартовая страница: без неё движок открыл бы свою
-/// страницу новой вкладки с чужим оформлением.
+/// `newtab_extension` supplies our permission-free new-tab page.
 pub fn build(
     profile: &ProfileMeta,
     temp_dir: &Path,
     proxy_address: Option<&str>,
-    start_url: Option<&str>,
+    newtab_extension: Option<&Path>,
 ) -> LaunchPlan {
     let user_data_dir = temp_dir.to_string_lossy().to_string();
 
@@ -85,6 +84,8 @@ pub fn build(
         "--disable-session-crashed-bubble".to_string(),
         // Лаунчер сам шифрует данные: автоматические отчёты не нужны.
         "--disable-breakpad".to_string(),
+        // Chrome for Testing explicitly supports this switch.
+        "--disable-infobars".to_string(),
     ];
 
     if profile.kind == ProfileKind::Antidetect {
@@ -97,10 +98,16 @@ pub fn build(
         args.push("--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string());
     }
 
-    // Адрес страницы идёт последним аргументом без ключа: так движок
-    // открывает её в первой вкладке вместо своей страницы новой вкладки.
-    if let Some(url) = start_url {
-        args.push(url.to_string());
+    if profile.restore_tabs {
+        args.push("--restore-last-session".to_string());
+    }
+    if let Some(extension) = newtab_extension {
+        args.push(format!("--load-extension={}", extension.display()));
+        // On the first run Chromium may navigate before registering the new-tab
+        // override. Open the same local page only when there is no saved session.
+        if !super::startpage::has_saved_session(temp_dir) {
+            args.push(super::startpage::file_url(&extension.join("index.html")));
+        }
     }
 
     LaunchPlan {
@@ -179,6 +186,7 @@ mod tests {
             proxy: None,
             created_unix: 0,
             engine_version: None,
+            restore_tabs: true,
             note: None,
         }
     }
@@ -278,18 +286,19 @@ mod tests {
     }
 
     #[test]
-    fn start_page_is_the_last_positional_argument() {
+    fn newtab_extension_does_not_append_a_tab_to_restored_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("Default/Sessions")).unwrap();
+        std::fs::write(temp.path().join("Default/Sessions/Session_123"), b"saved").unwrap();
         let plan = build(
             &profile(ProfileKind::Normal, 5),
-            Path::new("/tmp/p"),
+            temp.path(),
             None,
-            Some("file:///C:/start/index.html"),
+            Some(Path::new("C:/start")),
         );
-        assert_eq!(
-            plan.args.last().map(String::as_str),
-            Some("file:///C:/start/index.html"),
-            "страница открывается последним аргументом без ключа"
-        );
+        assert!(plan.args.contains(&"--load-extension=C:/start".into()));
+        assert!(plan.args.contains(&"--restore-last-session".into()));
+        assert!(plan.args.iter().all(|arg| arg.starts_with("--")));
 
         let without = build(
             &profile(ProfileKind::Normal, 5),
@@ -301,6 +310,34 @@ mod tests {
             !without.args.iter().any(|arg| arg.contains("file://")),
             "без стартовой страницы лишних аргументов быть не должно"
         );
+    }
+
+    #[test]
+    fn first_run_opens_our_page_without_touching_preferences() {
+        let temp = tempfile::tempdir().unwrap();
+        let plan = build(
+            &profile(ProfileKind::Antidetect, 5),
+            temp.path(),
+            None,
+            Some(Path::new("/start")),
+        );
+        assert_eq!(
+            plan.args.last(),
+            Some(&super::super::startpage::file_url(Path::new(
+                "/start/index.html"
+            )))
+        );
+        assert!(!temp.path().join("Default/Preferences").exists());
+    }
+
+    #[test]
+    fn restoration_can_be_disabled_without_disabling_newtab() {
+        let mut p = profile(ProfileKind::Antidetect, 5);
+        p.restore_tabs = false;
+        let plan = build(&p, Path::new("/tmp/p"), None, Some(Path::new("/start")));
+        assert!(!plan.args.contains(&"--restore-last-session".into()));
+        assert!(plan.args.contains(&"--load-extension=/start".into()));
+        assert!(plan.args.contains(&"--disable-infobars".into()));
     }
 
     #[test]

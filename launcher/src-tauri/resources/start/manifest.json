@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "FousBrowser — новая вкладка",
+  "version": "1.0.0",
+  "description": "Встроенная стартовая страница FousBrowser. Без доступа к вашим сайтам и данным.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtMjLedBNBt8cHJLdGOz2Zw0fZP2yE+y4uhgzJ5H1FKlROZp9ZH+tS2qFwU81p7C57/Xa0zimEm0R1vH8HtJJ+WFlFHTO6+o7Fi7iPGgJvIc7nIv/w6Hgt3M1pJ0KErKII69z0fGpPPKa1+N4MCxJ2raAZxwxekSzSzK+RfPQrG3VGMZSk67+QZ9yE0LxIiBoa0jClNcZIiHWuvsEcRqCZUN7s9kXrU624APjjDRckwkFOWSOYeCVev+U1fet0QwS27v5mlvapuJ73D3bVeeaWt3hBRylQ+mHa5KcWfKhi1cWdr8NXebi3VymHmghg/fMG2woA69cnwmRgW5kQAdVvQIDAQAB",
+  "chrome_url_overrides": {
+    "newtab": "index.html"
+  },
+  "icons": {
+    "128": "icon.png"
+  }
+}

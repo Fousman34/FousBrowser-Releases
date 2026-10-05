@@ -314,7 +314,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut first = Vault::create(&tmp.path().join("a"), PASSWORD).unwrap();
         let profile = first
-            .create_profile("Portable", ProfileKind::Antidetect, None, None)
+            .create_profile_with_tabs("Portable", ProfileKind::Antidetect, None, None, false)
             .unwrap();
         let data = tmp.path().join("data");
         fs::create_dir(&data).unwrap();
@@ -337,6 +337,7 @@ mod tests {
         let imported = second.import_profile(PASSWORD, &archive).unwrap();
         assert_ne!(imported.id, profile.id);
         assert_eq!(imported.seed, profile.seed);
+        assert!(!imported.restore_tabs);
         let restored = tmp.path().join("restored");
         second.unseal_profile(&imported.id, &restored).unwrap();
         assert_eq!(

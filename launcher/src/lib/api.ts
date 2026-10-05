@@ -92,6 +92,7 @@ export interface ProfileView {
   created_unix: number;
   engine_version: string | null;
   note: string | null;
+  restore_tabs: boolean;
   proxy: ProxyView | null;
 }
 
@@ -110,6 +111,7 @@ export interface ProfileDraft {
   kind: ProfileKind;
   proxy: ProxyInput | null;
   note: string | null;
+  restore_tabs: boolean;
 }
 
 export const PROFILE_KIND_LABELS: Record<ProfileKind, string> = {
@@ -176,6 +178,7 @@ export function profileCreate(draft: ProfileDraft): Promise<ProfileView> {
     kind: draft.kind,
     proxy: draft.proxy,
     note: draft.note,
+    restoreTabs: draft.restore_tabs,
   });
 }
 
@@ -186,13 +189,14 @@ export function profileClone(profileId: string, name?: string | null): Promise<P
 
 export function profileUpdate(
   profileId: string,
-  draft: Pick<ProfileDraft, 'name' | 'kind' | 'note'>
+  draft: Pick<ProfileDraft, 'name' | 'kind' | 'note' | 'restore_tabs'>
 ): Promise<ProfileView> {
   return invoke('profile_update', {
     profileId,
     name: draft.name,
     kind: draft.kind,
     note: draft.note,
+    restoreTabs: draft.restore_tabs,
   });
 }
 

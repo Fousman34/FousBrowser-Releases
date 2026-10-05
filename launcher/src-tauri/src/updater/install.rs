@@ -21,6 +21,16 @@ use super::UpdateResult;
 use super::{download, gpg, staging_dir, write_pointer, Channel, Platform, Release, UpdateError};
 use crate::engine::discovery;
 
+fn verification_text(url: &str, version: &str, name: &str) -> UpdateResult<String> {
+    match download::fetch_text(url) {
+        Ok(text) => Ok(text),
+        Err(error) => match super::channel::verification_mirror(version, name) {
+            Some(mirror) => download::fetch_text(&mirror).map_err(|_| error),
+            None => Err(error),
+        },
+    }
+}
+
 /// Текст лицензии проекта-основы движка Antidetect (BSD 3-Clause).
 const ENGINE_LICENSE: &str =
     include_str!("../../resources/licenses/ungoogled-chromium-LICENSE.txt");
@@ -60,6 +70,13 @@ pub fn prepare(
     mut on_progress: impl FnMut(download::Progress),
     mut on_log: impl FnMut(&str),
 ) -> UpdateResult<Prepared> {
+    if !super::channel::safe_version(&release.version)
+        || !super::channel::safe_archive_name(&release.asset_name)
+    {
+        return Err(UpdateError::Insecure(
+            "некорректное имя версии или архива движка".into(),
+        ));
+    }
     let staging = staging_dir(browsers_root, release.channel);
     crate::vault::profiles::wipe_dir(&staging)?;
     crate::paths::ensure_dir(&staging)?;
@@ -70,7 +87,22 @@ pub fn prepare(
         release.asset_name, release.version
     ));
 
-    let received = download::download(&release.asset_url, &archive, &mut on_progress)?;
+    let received = match download::download(&release.asset_url, &archive, &mut on_progress) {
+        Ok(received) => received,
+        Err(error) if matches!(error, UpdateError::Network(_) | UpdateError::Source(_)) => {
+            let Some(mirror) = super::channel::archive_mirror(release) else {
+                return Err(error);
+            };
+            on_log(&format!("GitHub не отдал архив: {error}"));
+            on_log("загрузка тех же байтов из исходного проекта; GPG и SHA-256 обязательны");
+            // Different source: discard the partial response before downloading again.
+            if archive.exists() {
+                fs::remove_file(&archive)?;
+            }
+            download::download(&mirror, &archive, &mut on_progress)?
+        }
+        Err(error) => return Err(error),
+    };
     on_log(&format!("получено {received} байт"));
 
     if let Some(expected) = release.size {
@@ -93,8 +125,8 @@ pub fn prepare(
                 .ok_or_else(|| UpdateError::Insecure("у релиза нет GPG-подписи".into()))?;
 
             on_log("проверка GPG-подписи списка контрольных сумм");
-            let sums = download::fetch_text(sums_url)?;
-            let signature = download::fetch_text(signature_url)?;
+            let sums = verification_text(sums_url, &release.version, SUMS_ASSET)?;
+            let signature = verification_text(signature_url, &release.version, SIGNATURE_ASSET)?;
             gpg::verify_detached(sums.as_bytes(), signature.as_bytes(), None)?;
             on_log("подпись подтверждена встроенным публичным ключом");
 

@@ -43,6 +43,50 @@ pub const SUMS_ASSET: &str = "SHA256SUMS";
 /// Имя подписи списка сумм.
 pub const SIGNATURE_ASSET: &str = "SHA256SUMS.asc";
 
+pub fn safe_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.split('.').all(|part| {
+            !part.is_empty()
+                && part.chars().all(|ch| ch.is_ascii_digit())
+                && part.parse::<u64>().is_ok()
+        })
+}
+
+pub fn safe_archive_name(value: &str) -> bool {
+    !value.starts_with('.')
+        && value.len() <= 255
+        && value.to_ascii_lowercase().ends_with(".zip")
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ['-', '_', '.'].contains(&ch))
+}
+
+/// Exact upstream bytes of the signed, published engine. A mirror never bypasses GPG/SHA256.
+pub fn archive_mirror(release: &Release) -> Option<String> {
+    let manifest: Value = serde_json::from_str(include_str!(
+        "../../../../browsers/antidetect/150.0.7871.186/release.json"
+    ))
+    .ok()?;
+    if release.channel != Channel::Antidetect
+        || manifest["version"].as_str()? != release.version
+        || manifest["asset_name"].as_str()? != release.asset_name
+    {
+        return None;
+    }
+    Some(manifest["upstream"]["url"].as_str()?.to_string())
+}
+
+pub fn verification_mirror(version: &str, name: &str) -> Option<String> {
+    if !version.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+        || version.is_empty()
+        || ![SUMS_ASSET, SIGNATURE_ASSET].contains(&name)
+    {
+        return None;
+    }
+    Some(format!("https://raw.githubusercontent.com/Fousman34/FousBrowser-Releases/main/browsers/antidetect/{version}/{name}"))
+}
+
 #[derive(Debug, Deserialize)]
 struct Manifest {
     channels: Channels,
@@ -69,6 +113,11 @@ pub fn normal_release(
         .map_err(|error| UpdateError::Source(format!("манифест не разобран: {error}")))?;
 
     let candidate = manifest.channels.stable.version;
+    if !safe_version(&candidate) {
+        return Err(UpdateError::Source(
+            "манифест содержит некорректную версию движка".into(),
+        ));
+    }
     if !version::is_newer(&candidate, current) {
         return Ok(None);
     }
@@ -115,6 +164,11 @@ pub fn antidetect_release(
         let Some(version) = tag.strip_prefix(ANTIDETECT_TAG_PREFIX) else {
             continue;
         };
+        if !safe_version(version) {
+            return Err(UpdateError::Insecure(
+                "некорректная версия движка в релизе".into(),
+            ));
+        }
         if release
             .get("draft")
             .and_then(Value::as_bool)
@@ -175,6 +229,9 @@ pub fn antidetect_release(
             return None;
         }
         let lowered = name.to_lowercase();
+        if !safe_archive_name(name) {
+            return None;
+        }
         let matches = platform
             .archive_hints()
             .iter()
@@ -219,6 +276,54 @@ pub fn antidetect_release(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_paths_and_non_archives_are_rejected() {
+        for name in [
+            "../antidetect-win64.zip",
+            "C:\\win64.zip",
+            "win64.zip:stream",
+            "win64.exe",
+            ".win64.zip",
+        ] {
+            assert!(!safe_archive_name(name), "{name}");
+        }
+        for v in ["../150", "150/../../1", "150..1", "", "150.0-beta"] {
+            assert!(!safe_version(v), "{v}");
+        }
+        let releases = serde_json::to_string(&vec![github_release(
+            "antidetect-v150.0.0.0",
+            &[
+                ("../antidetect-win64.zip", 100),
+                (SUMS_ASSET, 50),
+                (SIGNATURE_ASSET, 40),
+            ],
+        )])
+        .unwrap();
+        assert!(antidetect_release(&releases, Platform::WindowsX64, None).is_err());
+    }
+
+    #[test]
+    fn embedded_mirror_selects_the_signed_engine_and_never_downgrades() {
+        let json = include_str!("../../../../browsers/antidetect/releases.json");
+        let release = antidetect_release(json, Platform::WindowsX64, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(release.version, "150.0.7871.186");
+        assert!(archive_mirror(&release)
+            .unwrap()
+            .starts_with("https://github.com/adryfish/fingerprint-chromium/"));
+        let mut unknown = release.clone();
+        unknown.version = "999.0.0.0".into();
+        assert!(archive_mirror(&unknown).is_none());
+        assert!(
+            antidetect_release(json, Platform::WindowsX64, Some("151.0.0.0"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(verification_mirror("../bad", SUMS_ASSET).is_none());
+        assert!(verification_mirror("150.0.7871.186", "unknown").is_none());
+    }
 
     const MANIFEST: &str = r#"{
         "timestamp": "2026-01-01T00:00:00.000Z",

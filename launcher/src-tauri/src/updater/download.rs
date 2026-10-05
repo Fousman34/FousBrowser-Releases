@@ -17,6 +17,23 @@ use super::{UpdateError, UpdateResult};
 /// Сколько ждать соединения, а сколько — данных.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
+const USER_AGENT: &str = concat!("FousBrowser/", env!("CARGO_PKG_VERSION"));
+
+fn request_error(url: &str, error: ureq::Error) -> UpdateError {
+    match error {
+        ureq::Error::Status(code @ (404 | 410), _) => {
+            UpdateError::Source(format!("файл не найден в источнике (HTTP {code}): {url}"))
+        }
+        ureq::Error::Status(403, response)
+            if response.header("X-RateLimit-Remaining") == Some("0") =>
+        {
+            UpdateError::Network(
+                "GitHub временно ограничил число запросов с этого IP-адреса".into(),
+            )
+        }
+        other => UpdateError::Network(format!("{url}: {other}")),
+    }
+}
 
 /// Сколько раз пробовать докачать файл.
 ///
@@ -157,19 +174,18 @@ fn download_once(
     // Отдельные пределы для соединения и чтения: общий предел на весь запрос
     // обрывал бы большую загрузку на середине (так и случилось на 185 МиБ).
     let agent = ureq::AgentBuilder::new()
+        .user_agent(USER_AGENT)
         .timeout_connect(CONNECT_TIMEOUT)
         .timeout_read(READ_TIMEOUT)
         .build();
 
     let already = fs::metadata(target).map(|meta| meta.len()).unwrap_or(0);
-    let mut request = agent.get(url);
+    let mut request = agent.get(url).set("Cache-Control", "no-cache");
     if already > 0 {
         request = request.set("Range", &format!("bytes={already}-"));
     }
 
-    let response = request
-        .call()
-        .map_err(|error| UpdateError::Network(format!("{url}: {error}")))?;
+    let response = request.call().map_err(|error| request_error(url, error))?;
     let status = response.status();
 
     // 206 — сервер согласился отдать остаток; 200 — отдаёт файл целиком,
@@ -219,9 +235,11 @@ fn download_once(
 /// Загружает небольшой текстовый файл (манифест, список сумм, подпись).
 pub fn fetch_text(url: &str) -> UpdateResult<String> {
     let response = ureq::get(url)
+        .set("User-Agent", USER_AGENT)
+        .set("Cache-Control", "no-cache")
         .timeout(READ_TIMEOUT)
         .call()
-        .map_err(|error| UpdateError::Network(format!("{url}: {error}")))?;
+        .map_err(|error| request_error(url, error))?;
     response
         .into_string()
         .map_err(|error| UpdateError::Network(format!("{url}: {error}")))
@@ -370,6 +388,28 @@ mod tests {
         assert_eq!(updates.last().unwrap().total, Some(body.len() as u64));
         assert_eq!(updates.last().unwrap().percent(), Some(100.0));
         assert_eq!(sha256_file(&target).unwrap(), sha256_hex(&body));
+    }
+
+    #[test]
+    fn missing_file_is_reported_without_retrying_a_permanent_404() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/missing", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buffer = [0; 2048];
+            let read = socket.read(&mut buffer).unwrap();
+            assert!(read > 0);
+            socket
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let error = download(&url, &tmp.path().join("file.zip"), |_| {}).unwrap_err();
+        assert!(matches!(error, UpdateError::Source(_)));
+        assert!(error.to_string().contains("404"));
+        server.join().unwrap();
     }
 
     /// Сервер, который на первом запросе отдаёт половину файла и закрывает

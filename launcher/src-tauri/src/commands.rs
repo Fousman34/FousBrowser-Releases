@@ -387,6 +387,7 @@ pub struct ProfileView {
     pub created_unix: u64,
     pub engine_version: Option<String>,
     pub note: Option<String>,
+    pub restore_tabs: bool,
     pub proxy: Option<ProxyView>,
 }
 
@@ -400,6 +401,7 @@ impl From<&ProfileMeta> for ProfileView {
             created_unix: profile.created_unix,
             engine_version: profile.engine_version.clone(),
             note: profile.note.clone(),
+            restore_tabs: profile.restore_tabs,
             proxy: profile.proxy.as_ref().map(|config| ProxyView {
                 scheme: config.scheme.as_str().to_string(),
                 host: config.host.clone(),
@@ -541,13 +543,20 @@ pub async fn profile_create(
     kind: String,
     proxy: Option<ProxyInput>,
     note: Option<String>,
+    restore_tabs: Option<bool>,
     state: State<'_, VaultState>,
 ) -> CommandResult<ProfileView> {
     let _operation = LIFECYCLE.lock().await;
     let kind = parse_kind(&kind)?;
     with_vault_mut(&state, |vault| {
         let config = merge_proxy(None, proxy)?;
-        let profile = vault.create_profile(&name, kind, config, note)?;
+        let profile = vault.create_profile_with_tabs(
+            &name,
+            kind,
+            config,
+            note,
+            restore_tabs.unwrap_or(true),
+        )?;
         Ok(ProfileView::from(&profile))
     })
 }
@@ -573,12 +582,18 @@ pub async fn profile_update(
     name: String,
     kind: String,
     note: Option<String>,
+    restore_tabs: Option<bool>,
     state: State<'_, VaultState>,
 ) -> CommandResult<ProfileView> {
     let _operation = LIFECYCLE.lock().await;
     let kind = parse_kind(&kind)?;
     with_vault_mut(&state, |vault| {
-        let profile = vault.update_profile(&profile_id, &name, kind, note)?;
+        let profile = match restore_tabs {
+            Some(restore) => {
+                vault.update_profile_with_tabs(&profile_id, &name, kind, note, restore)?
+            }
+            None => vault.update_profile(&profile_id, &name, kind, note)?,
+        };
         Ok(ProfileView::from(&profile))
     })
 }
@@ -874,25 +889,14 @@ pub async fn profile_launch(
         Some(config) => Some(flags::proxy_address(config)),
     };
 
-    // Стартовая страница: своя, с одной строкой поиска. Если её не удалось
-    // подготовить, движок откроет свою страницу новой вкладки — это хуже,
-    // но прерывать из-за оформления запуск профиля нельзя.
-    let start_url = match crate::engine::startpage::ensure(&paths::app_root()?) {
-        Ok(page) => Some(crate::engine::startpage::file_url(&page)),
-        Err(error) => {
-            eprintln!("стартовая страница недоступна: {error}");
-            None
-        }
-    };
+    // Preparation failures use the same cleanup path as failed process launches.
+    let launched = (|| {
+        let page = crate::engine::startpage::ensure(&paths::app_root()?)?;
 
-    let plan = flags::build(
-        &profile,
-        &temp_dir,
-        proxy_address.as_deref(),
-        start_url.as_deref(),
-    );
-
-    let launched = match engines.launch(&engine, &plan, &profile_id, temp_dir.clone()) {
+        let plan = flags::build(&profile, &temp_dir, proxy_address.as_deref(), page.parent());
+        engines.launch(&engine, &plan, &profile_id, temp_dir.clone())
+    })();
+    let launched = match launched {
         Ok(launched) => launched,
         Err(error) => {
             // Запуск не удался: открытая копия немедленно возвращается

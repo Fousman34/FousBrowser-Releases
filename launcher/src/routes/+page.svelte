@@ -962,7 +962,9 @@
   .profiles li {
     padding: 14px 0;
     border-bottom: 1px solid var(--line-soft);
+    transition: background-color 180ms ease, border-color 180ms ease;
   }
+  .profiles li:hover { background-color: #b79aff05; border-bottom-color: var(--accent-soft); }
 
   .profiles li.pending {
     opacity: 0.55;

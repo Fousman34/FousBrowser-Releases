@@ -558,6 +558,7 @@ mod tests {
             }),
             created_unix: 1_700_000_000,
             engine_version: None,
+            restore_tabs: true,
             note: Some("заметка".to_string()),
         });
         assert!(vault.is_dirty());
@@ -588,6 +589,7 @@ mod tests {
             proxy: None,
             created_unix: 0,
             engine_version: None,
+            restore_tabs: true,
             note: None,
         });
         vault.save_metadata().unwrap();
@@ -662,6 +664,7 @@ mod tests {
                 proxy: None,
                 created_unix: 0,
                 engine_version: None,
+                restore_tabs: true,
                 note: None,
             });
         }
