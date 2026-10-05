@@ -19,6 +19,9 @@
 //! конце, поэтому отмена или сбой не портят текущий движок.
 
 pub mod channel;
+pub mod download;
+pub mod gpg;
+pub mod install;
 pub mod version;
 
 use std::path::{Path, PathBuf};

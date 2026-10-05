@@ -39,8 +39,11 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", 
 # HTTP для проверки обновлений и загрузки движков: blocking-клиент на rustls,
 # без OpenSSL и без своего сетевого стека.
 ureq = { version = "2", features = ["tls", "json"] }
+# Распаковка архивов движка: чистый Rust, без внешних утилит.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # Проверка GPG-подписи релизов движка. Криптография на чистом Rust
 # (crypto-rust), поэтому у пользователя не требуется установленный gpg.
+anyhow = "1"
 sequoia-openpgp = { version = "2", default-features = false, features = [
     "crypto-rust",
     "allow-experimental-crypto",

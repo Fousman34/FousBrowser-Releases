@@ -187,7 +187,10 @@ fn from_newest_version(kind: ProfileKind, root: &Path) -> Result<Option<Engine>>
 }
 
 /// Ищет главный файл движка в каталоге и на один уровень глубже.
-fn find_program(root: &Path) -> Option<PathBuf> {
+///
+/// Функция публичная: тем же поиском пользуется установка обновления,
+/// чтобы указатель вёл ровно на тот файл, который найдёт запуск.
+pub fn find_program(root: &Path) -> Option<PathBuf> {
     for name in CANDIDATES {
         let candidate = root.join(name);
         if candidate.is_file() {
