@@ -65,7 +65,16 @@ pub fn write_if_changed(path: &Path, content: &[u8]) -> Result<bool> {
 /// в пути ломали бы открытие страницы.
 pub fn file_url(path: &Path) -> String {
     let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let text = absolute.to_string_lossy().replace('\\', "/");
+    let normalized = absolute.to_string_lossy().replace('\\', "/");
+    // canonicalize() returns Windows extended-length paths, which are not URLs.
+    let text = if let Some(unc) = normalized.strip_prefix("//?/UNC/") {
+        format!("//{unc}")
+    } else {
+        normalized
+            .strip_prefix("//?/")
+            .unwrap_or(&normalized)
+            .to_string()
+    };
 
     let mut encoded = String::with_capacity(text.len() + 8);
     for byte in text.bytes() {
@@ -77,7 +86,9 @@ pub fn file_url(path: &Path) -> String {
         }
     }
 
-    if encoded.starts_with('/') {
+    if encoded.starts_with("//") {
+        format!("file:{encoded}")
+    } else if encoded.starts_with('/') {
         format!("file://{encoded}")
     } else {
         // Путь без ведущей косой черты (Windows-диск) — три косые черты.
@@ -124,11 +135,11 @@ mod tests {
 
     #[test]
     fn logo_matches_the_application_icon_geometry() {
-        // Знак на странице — тот же, что у приложения: круг и два шеврона.
+        // Shared vector master: dark orbit, violet F and coral accent.
         assert!(LOGO.contains("<svg"));
-        assert_eq!(LOGO.matches("<circle").count(), 4);
-        assert!(LOGO.contains("#22d3ee"));
-        assert!(LOGO.contains("#34d399"));
+        assert!(LOGO.contains("<polygon"));
+        assert!(LOGO.contains("#b79aff"));
+        assert!(LOGO.contains("#ff927c"));
     }
 
     #[test]
@@ -148,5 +159,15 @@ mod tests {
             ));
             assert!(url.starts_with("file:///C:/"), "url: {url}");
         }
+    }
+
+    #[test]
+    fn existing_windows_file_has_valid_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let page = ensure(tmp.path()).unwrap();
+        let url = file_url(&page);
+        assert!(!url.contains("%3F"), "extended path prefix leaked: {url}");
+        assert!(url.starts_with("file:///"), "{url}");
+        assert!(!url.starts_with("file:////"), "{url}");
     }
 }

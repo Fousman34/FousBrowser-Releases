@@ -124,6 +124,10 @@ pub fn recover(vault: &mut UnlockedVault) -> Result<RecoveryReport> {
         //    иначе браузер продолжит писать в каталог, который мы забираем.
         if entry.state == STATE_RUNNING || entry.state == STATE_SEALING {
             if let Some(stopped) = stop_orphan_process(&entry) {
+                if process::is_alive(stopped) {
+                    report.fail(&profile_id, "процесс не завершился; открытые данные оставлены для повторного восстановления");
+                    continue;
+                }
                 report.stopped_pids.push(stopped);
             }
         }

@@ -60,3 +60,4 @@ core-tests.log
 !browsers/antidetect/*/release.json
 !browsers/antidetect/*/SHA256SUMS
 !browsers/antidetect/*/SHA256SUMS.asc
+__pycache__/

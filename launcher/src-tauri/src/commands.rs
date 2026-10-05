@@ -10,6 +10,10 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+// Serialize lifecycle changes with background sealing and archive operations.
+static LIFECYCLE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static UPDATE_INSTALL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 use crate::paths;
 use crate::vault::kdf::PasswordReport;
 use crate::vault::{
@@ -202,6 +206,7 @@ pub async fn vault_create(
     password: String,
     state: State<'_, VaultState>,
 ) -> CommandResult<UnlockOutcome> {
+    let _operation = LIFECYCLE.lock().await;
     let dir = paths::vault_dir()?;
     let unlocked = Vault::create(&dir, &password)?;
     let outcome = UnlockOutcome {
@@ -225,6 +230,7 @@ pub async fn vault_unlock(
     password: String,
     state: State<'_, VaultState>,
 ) -> CommandResult<UnlockOutcome> {
+    let _operation = LIFECYCLE.lock().await;
     let dir = paths::vault_dir()?;
     let vault = Vault::open(&dir)?;
     let mut unlocked = vault.unlock(&password)?;
@@ -266,12 +272,34 @@ pub async fn vault_unlock(
 /// Повторяет разбор последствий сбоя по требованию.
 #[tauri::command]
 pub async fn vault_recover(state: State<'_, VaultState>) -> CommandResult<RecoveryReport> {
+    let _operation = LIFECYCLE.lock().await;
     with_vault_mut(&state, |vault| Ok(crate::engine::recovery::recover(vault)?))
 }
 
 /// Блокирует хранилище: мастер-ключ затирается в памяти.
 #[tauri::command]
-pub async fn vault_lock(state: State<'_, VaultState>) -> CommandResult<()> {
+pub async fn vault_lock(
+    state: State<'_, VaultState>,
+    engines: State<'_, EngineManager>,
+) -> CommandResult<()> {
+    let _operation = LIFECYCLE.lock().await;
+    if !engines.ids().is_empty() {
+        return Err(CommandError::new(
+            "already_running",
+            "Сначала остановите работающие профили",
+        ));
+    }
+    with_vault(&state, |vault| {
+        for profile in vault.profiles() {
+            if vault.temp_profile_dir(&profile.id).exists() {
+                return Err(CommandError::new(
+                    "plaintext",
+                    "Сначала зашифруйте открытые данные профилей",
+                ));
+            }
+        }
+        Ok(())
+    })?;
     state.replace(None);
     Ok(())
 }
@@ -451,6 +479,61 @@ pub async fn profile_list(state: State<'_, VaultState>) -> CommandResult<Vec<Pro
     })
 }
 
+#[tauri::command]
+pub async fn profile_transfer(
+    profile_id: Option<String>,
+    password: String,
+    app: AppHandle,
+) -> CommandResult<Option<String>> {
+    let password = zeroize::Zeroizing::new(password);
+    tauri::async_runtime::spawn_blocking(move || {
+        let dialog = rfd::FileDialog::new().add_filter("FousBrowser profile", &["fousprofile"]);
+        let selected = if profile_id.is_some() {
+            dialog.set_file_name("profile.fousprofile").save_file()
+        } else {
+            dialog.pick_file()
+        };
+        let Some(path) = selected else {
+            return Ok(None);
+        };
+        let _operation = LIFECYCLE.blocking_lock();
+        let state = app.state::<VaultState>();
+        with_vault_mut(&state, |vault| {
+            if let Some(id) = profile_id {
+                if app.state::<EngineManager>().is_running(&id) {
+                    return Err(CommandError::new(
+                        "already_running",
+                        "Сначала остановите профиль",
+                    ));
+                }
+                vault.export_profile(&id, &password, &path)?;
+                Ok(Some("Профиль экспортирован".to_string()))
+            } else {
+                let profile = vault.import_profile(&password, &path)?;
+                Ok(Some(format!("Импортирован профиль «{}»", profile.name)))
+            }
+        })
+    })
+    .await
+    .map_err(|_| CommandError::new("transfer", "Не удалось завершить перенос профиля"))?
+}
+
+#[tauri::command]
+pub async fn profile_check_proxy(
+    profile_id: String,
+    state: State<'_, VaultState>,
+) -> CommandResult<()> {
+    let config = with_vault(&state, |vault| {
+        vault
+            .metadata()
+            .find(&profile_id)
+            .and_then(|profile| profile.proxy.clone())
+            .ok_or_else(|| CommandError::new("invalid", "Прокси не настроен"))
+    })?;
+    crate::proxy::check(&config).await?;
+    Ok(())
+}
+
 /// Создаёт профиль.
 #[tauri::command]
 pub async fn profile_create(
@@ -460,6 +543,7 @@ pub async fn profile_create(
     note: Option<String>,
     state: State<'_, VaultState>,
 ) -> CommandResult<ProfileView> {
+    let _operation = LIFECYCLE.lock().await;
     let kind = parse_kind(&kind)?;
     with_vault_mut(&state, |vault| {
         let config = merge_proxy(None, proxy)?;
@@ -475,6 +559,7 @@ pub async fn profile_clone(
     name: Option<String>,
     state: State<'_, VaultState>,
 ) -> CommandResult<ProfileView> {
+    let _operation = LIFECYCLE.lock().await;
     with_vault_mut(&state, |vault| {
         let profile = vault.clone_profile(&profile_id, name.as_deref())?;
         Ok(ProfileView::from(&profile))
@@ -490,6 +575,7 @@ pub async fn profile_update(
     note: Option<String>,
     state: State<'_, VaultState>,
 ) -> CommandResult<ProfileView> {
+    let _operation = LIFECYCLE.lock().await;
     let kind = parse_kind(&kind)?;
     with_vault_mut(&state, |vault| {
         let profile = vault.update_profile(&profile_id, &name, kind, note)?;
@@ -504,6 +590,7 @@ pub async fn profile_set_proxy(
     proxy: Option<ProxyInput>,
     state: State<'_, VaultState>,
 ) -> CommandResult<ProfileView> {
+    let _operation = LIFECYCLE.lock().await;
     with_vault_mut(&state, |vault| {
         let current = vault
             .metadata()
@@ -524,7 +611,15 @@ pub async fn profile_set_proxy(
 pub async fn profile_delete(
     profile_id: String,
     state: State<'_, VaultState>,
+    engines: State<'_, EngineManager>,
 ) -> CommandResult<usize> {
+    let _operation = LIFECYCLE.lock().await;
+    if engines.is_running(&profile_id) {
+        return Err(CommandError::new(
+            "already_running",
+            "Сначала остановите профиль",
+        ));
+    }
     with_vault_mut(&state, |vault| {
         vault.delete_profile(&profile_id)?;
         Ok(vault.profiles().len())
@@ -731,6 +826,7 @@ pub async fn profile_launch(
     engines: State<'_, EngineManager>,
     bridges: State<'_, crate::proxy::BridgeManager>,
 ) -> CommandResult<RuntimeView> {
+    let _operation = LIFECYCLE.lock().await;
     if engines.is_running(&profile_id) {
         return Err(CommandError::new(
             "already_running",
@@ -747,11 +843,22 @@ pub async fn profile_launch(
     })?;
 
     let engine: Engine = discovery::resolve(profile.kind)?;
+    if let Some(config) = &profile.proxy {
+        crate::proxy::check(config).await?;
+    }
     let temp_dir = with_vault(&state, |vault| Ok(vault.temp_profile_dir(&profile_id)))?;
 
     // Прокси с логином и паролем обслуживает локальный мост: движки не умеют
     // парольную аутентификацию через `--proxy-server`. В командную строку
     // движка уходит только адрес моста, без секретов.
+    let plaintext = with_vault(&state, |vault| Ok(vault.plaintext_state(&profile_id)?))?;
+    if plaintext == crate::vault::PlaintextState::Absent || !temp_dir.is_dir() {
+        with_vault_mut(&state, |vault| {
+            vault.unseal_profile(&profile_id, &temp_dir)?;
+            Ok(())
+        })?;
+    }
+
     let proxy_address = match &profile.proxy {
         None => None,
         Some(config) if flags::proxy_needs_bridge(config) => {
@@ -766,14 +873,6 @@ pub async fn profile_launch(
         }
         Some(config) => Some(flags::proxy_address(config)),
     };
-
-    let plaintext = with_vault(&state, |vault| Ok(vault.plaintext_state(&profile_id)?))?;
-    if plaintext == crate::vault::PlaintextState::Absent || !temp_dir.is_dir() {
-        with_vault_mut(&state, |vault| {
-            vault.unseal_profile(&profile_id, &temp_dir)?;
-            Ok(())
-        })?;
-    }
 
     // Стартовая страница: своя, с одной строкой поиска. Если её не удалось
     // подготовить, движок откроет свою страницу новой вкладки — это хуже,
@@ -835,6 +934,7 @@ pub async fn profile_stop(
     engines: State<'_, EngineManager>,
     bridges: State<'_, crate::proxy::BridgeManager>,
 ) -> CommandResult<RuntimeView> {
+    let _operation = LIFECYCLE.lock().await;
     if !engines.is_running(&profile_id) {
         // Данные могли остаться расшифрованными после сбоя: возвращаем их
         // в контейнер, даже если процесса уже нет.
@@ -859,6 +959,12 @@ pub async fn profile_stop(
     emit_state(&app, &profile_id, "stopping", None, None);
 
     let stopped = engines.stop(&profile_id, GRACEFUL_TIMEOUT, FORCED_TIMEOUT);
+    if engines.is_running(&profile_id) {
+        return Err(CommandError::new(
+            "engine_failed",
+            "Браузер не завершился. Данные сохранены открытыми; повторите остановку.",
+        ));
+    }
     bridges.stop(&profile_id);
 
     let result = match seal_back(&state, &profile_id) {
@@ -911,6 +1017,7 @@ pub async fn profile_stop_all(
     engines: State<'_, EngineManager>,
     bridges: State<'_, crate::proxy::BridgeManager>,
 ) -> CommandResult<StopAllReport> {
+    let _operation = LIFECYCLE.lock().await;
     let ids = engines.ids();
     let vault_dir = paths::vault_dir()?;
 
@@ -941,6 +1048,13 @@ pub async fn profile_stop_all(
     };
 
     for id in ids {
+        if engines.is_running(&id) {
+            report.failed.push(StopFailure {
+                profile_id: id,
+                message: "Браузер ещё работает; шифрование отложено".into(),
+            });
+            continue;
+        }
         match seal_back(&state, &id) {
             Ok(()) => {
                 let _ = journal_remove(&vault_dir, &id);
@@ -967,6 +1081,9 @@ pub async fn profile_stop_all(
 /// остаётся в журнале, а расшифрованная копия будет разобрана при следующей
 /// разблокировке (этап M7).
 pub fn reap_and_finalize(app: &AppHandle) {
+    let Ok(_operation) = LIFECYCLE.try_lock() else {
+        return;
+    };
     let engines = app.state::<EngineManager>();
     let finished = engines.reap();
     if finished.is_empty() {
@@ -1107,11 +1224,15 @@ pub async fn update_check(channel: String) -> CommandResult<Option<Release>> {
 /// время, а интерфейс должен показывать прогресс, а не ждать.
 #[tauri::command]
 pub async fn update_install(channel: String, version: String, app: AppHandle) -> CommandResult<()> {
+    let install_guard = UPDATE_INSTALL
+        .try_lock()
+        .map_err(|_| CommandError::new("busy", "Установка движка уже выполняется"))?;
     let channel = parse_channel(&channel)?;
     let name = channel.dir_name().to_string();
     let app_handle = app.clone();
 
     std::thread::spawn(move || {
+        let _install_guard = install_guard;
         let emit_log = |line: &str| {
             let _ = app_handle.emit(
                 "update://log",
@@ -1172,5 +1293,12 @@ pub async fn update_install(channel: String, version: String, app: AppHandle) ->
 /// Перезапускает лаунчер (кнопка «Перезапустить» после обновления).
 #[tauri::command]
 pub async fn app_restart(app: AppHandle) -> CommandResult<()> {
+    let _operation = LIFECYCLE.lock().await;
+    if !app.state::<EngineManager>().ids().is_empty() {
+        return Err(CommandError::new(
+            "already_running",
+            "Перед перезапуском остановите профили",
+        ));
+    }
     app.restart();
 }

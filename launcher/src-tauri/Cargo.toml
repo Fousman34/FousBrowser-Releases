@@ -1,6 +1,6 @@
 [package]
 name = "fousbrowser-launcher"
-version = "0.1.1"
+version = "0.2.0"
 description = "FousBrowser launcher — encrypted browser profile manager"
 authors = ["Fousman34"]
 license = "PolyForm-Noncommercial-1.0.0"
@@ -36,6 +36,11 @@ directories = "6.0.0"
 hex = "0.4.3"
 getrandom = "0.4.3"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
+tempfile = "3.27.0"
+rfd = "0.15"
 # HTTP для проверки обновлений и загрузки движков: blocking-клиент на rustls,
 # без OpenSSL и без своего сетевого стека.
 ureq = { version = "2", features = ["tls", "json"] }

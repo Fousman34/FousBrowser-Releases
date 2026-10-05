@@ -289,9 +289,8 @@ impl EngineManager {
             return view;
         }
 
-        // Процесс не отвечает даже на принудительное завершение: убираем его
-        // из учёта, чтобы лаунчер не считал профиль работающим вечно.
-        self.remove(profile_id)
+        // Keep ownership: encrypting/deleting a still-running profile loses data.
+        None
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, RunningInstance>> {

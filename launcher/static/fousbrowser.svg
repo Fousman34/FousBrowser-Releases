@@ -1,11 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="FousBrowser">
-  <circle cx="512.0" cy="512.0" r="476.2" fill="#0a0c0a" />
-  <circle cx="512.0" cy="512.0" r="430.3" fill="#0d1110" />
-  <circle cx="512.0" cy="512.0" r="476.2" fill="none" stroke="#22d3ee" stroke-width="28.7" />
-  <circle cx="512.0" cy="512.0" r="443.2" fill="none" stroke="#164e57" stroke-width="20.1" />
-  <path d="M 102.8 410.0 A 421.7 421.7 0 0 1 381.7 111.0" fill="none" stroke="#22d3ee" opacity="0.28" stroke-width="25.8" stroke-linecap="round" />
-  <path d="M 891.0 696.9 A 421.7 421.7 0 0 1 642.3 913.0" fill="none" stroke="#34d399" opacity="0.22" stroke-width="22.9" stroke-linecap="round" />
-  <path d="M 281.6 442.4 L 512.0 248.8 L 742.4 442.4" fill="none" stroke="#22d3ee" stroke-width="59.4" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M 281.6 581.6 L 512.0 775.2 L 742.4 581.6" fill="none" stroke="#34d399" stroke-width="59.4" stroke-linecap="round" stroke-linejoin="round" />
-  <line x1="512.0" y1="481.3" x2="512.0" y2="542.7" stroke="#22d3ee" stroke-width="20.2" opacity="0.45" stroke-linecap="round" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="FousBrowser">
+<circle cx="50" cy="50" r="47" fill="#121019"/>
+<path d="M32.2500,88.0649 A42,42 0 1 1 76.9971,17.8261" fill="none" stroke="#b79aff" stroke-width="5"/><path d="M84.4044,25.9098 A42,42 0 0 1 46.3395,91.8402" fill="none" stroke="#ff927c" stroke-width="5"/>
+<polygon points="39,29 72,29 65,41 48,41 44,49 61,49 54,61 39,61 32,75 20,75" fill="#b79aff"/>
+<polygon points="64,65 77,65 70,77 57,77" fill="#ff927c"/>
 </svg>

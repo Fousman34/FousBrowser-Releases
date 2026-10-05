@@ -18,9 +18,8 @@
 //! # Что поддерживается
 //!
 //! Апстрим: **SOCKS5** (в том числе с логином и паролем, RFC 1929) и
-//! **HTTP CONNECT** (`Proxy-Authorization: Basic`). Схема `https` пока
-//! дозванивается тем же `HTTP CONNECT`, но без TLS до прокси: это отмечено
-//! в `docs/ARCHITECTURE.md` как известное ограничение, а не спрятано.
+//! **HTTP CONNECT** (`Proxy-Authorization: Basic`) и HTTPS CONNECT через TLS
+//! с системной проверкой цепочки сертификатов и имени сервера.
 //!
 //! # Границы
 //!
@@ -35,7 +34,7 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
@@ -79,14 +78,16 @@ impl Bridge {
 
         let (shutdown, mut stopped) = oneshot::channel::<()>();
         let relay = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
                     _ = &mut stopped => break,
+                    _ = connections.join_next(), if !connections.is_empty() => {},
                     accepted = listener.accept() => {
                         match accepted {
                             Ok((stream, _)) => {
                                 let upstream = upstream.clone();
-                                tokio::spawn(async move {
+                                connections.spawn(async move {
                                     // Ошибка одного соединения не должна ронять мост.
                                     let _ = serve(stream, upstream).await;
                                 });
@@ -230,7 +231,10 @@ impl Target {
 
 /// Обслуживает одно соединение движка.
 async fn serve(mut client: TcpStream, upstream: ProxyConfig) -> io::Result<()> {
-    let target = match socks5_handshake(&mut client).await {
+    let target = match tokio::time::timeout(CONNECT_TIMEOUT, socks5_handshake(&mut client))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "SOCKS5 handshake timeout"))?
+    {
         Ok(target) => target,
         Err(error) => {
             // Отказ клиенту отправляет сама `socks5_handshake`, здесь важно
@@ -244,18 +248,7 @@ async fn serve(mut client: TcpStream, upstream: ProxyConfig) -> io::Result<()> {
         Ok(stream) => stream,
         Err(error) => {
             let _ = client
-                .write_all(&[
-                    SOCKS_VERSION,
-                    SOCKS_REP_NOT_ALLOWED,
-                    0x00,
-                    SOCKS_ATYP_IPV4,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ])
+                .write_all(&[SOCKS_VERSION, 0x01, 0x00, SOCKS_ATYP_IPV4, 0, 0, 0, 0, 0, 0])
                 .await;
             let _ = client.shutdown().await;
             return Err(error);
@@ -365,12 +358,29 @@ async fn socks5_handshake(client: &mut TcpStream) -> io::Result<Target> {
 }
 
 /// Устанавливает соединение с апстримом через нужный протокол.
-async fn connect_upstream(upstream: &ProxyConfig, target: &Target) -> io::Result<TcpStream> {
+trait ProxyStream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> ProxyStream for T {}
+type RemoteStream = Box<dyn ProxyStream>;
+
+/// Tests the configured protocol and credentials without ever falling back to direct traffic.
+pub async fn check(upstream: &ProxyConfig) -> Result<()> {
+    upstream.validate().map_err(VaultError::Invalid)?;
+    let target = Target {
+        atyp: SOCKS_ATYP_DOMAIN,
+        address: b"example.com".to_vec(),
+        port: 443,
+    };
+    connect_upstream(upstream, &target).await.map(|_| ()).map_err(|error| {
+        VaultError::EngineFailed(format!("Проверка прокси не пройдена: {error}. Проверьте протокол, порт и авторизацию; HTTP и SOCKS5 часто используют разные порты. Проверяемая цель: example.com:443."))
+    })
+}
+
+async fn connect_upstream(upstream: &ProxyConfig, target: &Target) -> io::Result<RemoteStream> {
     let connect = async {
         match upstream.scheme {
-            ProxyScheme::Socks5 => socks5_upstream(upstream, target).await,
-            // Схема `https` пока обслуживается тем же HTTP CONNECT: TLS до
-            // самого прокси не поднимается, это известное ограничение.
+            ProxyScheme::Socks5 => socks5_upstream(upstream, target)
+                .await
+                .map(|stream| Box::new(stream) as RemoteStream),
             ProxyScheme::Http | ProxyScheme::Https => http_connect_upstream(upstream, target).await,
         }
     };
@@ -406,8 +416,8 @@ async fn socks5_upstream(upstream: &ProxyConfig, target: &Target) -> io::Result<
     }
 
     match choice[1] {
-        SOCKS_NO_AUTH => {}
-        SOCKS_USER_PASS => {
+        SOCKS_NO_AUTH if !with_credentials => {}
+        SOCKS_USER_PASS if with_credentials => {
             let username = upstream.username.clone().unwrap_or_default();
             let password = upstream.password.clone().unwrap_or_default();
             if username.len() > 255 || password.len() > 255 {
@@ -426,7 +436,7 @@ async fn socks5_upstream(upstream: &ProxyConfig, target: &Target) -> io::Result<
 
             let mut answer = [0u8; 2];
             stream.read_exact(&mut answer).await?;
-            if answer[1] != 0x00 {
+            if answer[0] != 0x01 || answer[1] != 0x00 {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "прокси отклонил логин или пароль",
@@ -446,6 +456,12 @@ async fn socks5_upstream(upstream: &ProxyConfig, target: &Target) -> io::Result<
 
     let mut reply = [0u8; 4];
     stream.read_exact(&mut reply).await?;
+    if reply[0] != SOCKS_VERSION || reply[2] != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "некорректный ответ SOCKS5",
+        ));
+    }
     if reply[1] != SOCKS_REP_SUCCEEDED {
         return Err(io::Error::new(
             io::ErrorKind::ConnectionRefused,
@@ -476,9 +492,29 @@ async fn socks5_upstream(upstream: &ProxyConfig, target: &Target) -> io::Result<
 }
 
 /// Подключение через HTTP-прокси методом CONNECT.
-async fn http_connect_upstream(upstream: &ProxyConfig, target: &Target) -> io::Result<TcpStream> {
-    let mut stream = TcpStream::connect((upstream.host.as_str(), upstream.port)).await?;
+async fn http_connect_upstream(
+    upstream: &ProxyConfig,
+    target: &Target,
+) -> io::Result<RemoteStream> {
+    let tcp = TcpStream::connect((upstream.host.as_str(), upstream.port)).await?;
+    let mut stream: RemoteStream = if upstream.scheme == ProxyScheme::Https {
+        let connector = native_tls::TlsConnector::new().map_err(io::Error::other)?;
+        Box::new(
+            tokio_native_tls::TlsConnector::from(connector)
+                .connect(&upstream.host, tcp)
+                .await
+                .map_err(io::Error::other)?,
+        )
+    } else {
+        Box::new(tcp)
+    };
     let authority = target.authority();
+    if authority.bytes().any(|byte| byte <= 32 || byte == 127) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "некорректный адрес CONNECT",
+        ));
+    }
 
     let mut request = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n");
     if let (Some(username), Some(password)) = (&upstream.username, &upstream.password) {
@@ -519,6 +555,62 @@ async fn http_connect_upstream(upstream: &ProxyConfig, target: &Target) -> io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn https_proxy_starts_with_tls_and_never_sends_plaintext_credentials() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut first = [0u8; 3];
+            stream.read_exact(&mut first).await.unwrap();
+            assert_eq!(first[0], 22, "must start with a TLS handshake record");
+            assert_eq!(first[1], 3);
+        });
+        let config = ProxyConfig {
+            scheme: ProxyScheme::Https,
+            host: "localhost".into(),
+            port,
+            username: Some("user".into()),
+            password: Some("secret".into()),
+        };
+        let target = Target {
+            atyp: SOCKS_ATYP_DOMAIN,
+            address: b"example.com".to_vec(),
+            port: 443,
+        };
+        assert!(connect_upstream(&config, &target).await.is_err());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn socks_proxy_cannot_select_an_unoffered_authentication_method() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut greeting = [0u8; 3];
+            stream.read_exact(&mut greeting).await.unwrap();
+            stream.write_all(&[5, 0]).await.unwrap();
+        });
+        let config = ProxyConfig {
+            scheme: ProxyScheme::Socks5,
+            host: "127.0.0.1".into(),
+            port,
+            username: Some("user".into()),
+            password: Some("secret".into()),
+        };
+        let target = Target {
+            atyp: SOCKS_ATYP_DOMAIN,
+            address: b"example.com".to_vec(),
+            port: 443,
+        };
+        assert!(matches!(
+            socks5_upstream(&config, &target).await.unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        ));
+        server.await.unwrap();
+    }
 
     fn upstream(host: &str, port: u16, with_credentials: bool) -> ProxyConfig {
         ProxyConfig {

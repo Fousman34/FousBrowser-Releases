@@ -18,11 +18,11 @@
       }
 
       :root {
-        --bg: #0a0c0a;
-        --fg: #cbd8d2;
-        --faint: #47534e;
-        --accent: #22d3ee;
-        --ok: #34d399;
+        --bg: #100e16;
+        --fg: #e3dce9;
+        --faint: #887b96;
+        --accent: #b79aff;
+        --ok: #ff927c;
       }
 
       * {
@@ -37,6 +37,7 @@
 
       body {
         background: var(--bg);
+        background-image: radial-gradient(ellipse at 50% 30%, #30203955, transparent 60%);
         color: var(--fg);
         font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         display: grid;
@@ -69,6 +70,7 @@
         margin: 0 auto;
         user-select: none;
         -webkit-user-drag: none;
+        animation: float 7s ease-in-out infinite;
       }
 
       h1 {
@@ -94,6 +96,8 @@
         padding: 6px 2px;
         border-bottom: 1px solid var(--faint);
         transition: border-color 120ms ease;
+        background: #1b152266;
+        padding: 18px 20px;
       }
 
       form:focus-within {
@@ -106,6 +110,7 @@
       }
 
       input {
+        min-width: 0;
         flex: 1;
         border: 0;
         outline: 0;
@@ -134,9 +139,13 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
-        main {
+        main, .logo {
           animation: none;
         }
+      }
+      @keyframes float {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-7px); }
       }
     </style>
   </head>
@@ -144,7 +153,7 @@
     <main>
       <img class="logo" src="logo.svg" alt="" />
       <h1>FousBrowser</h1>
-      <p class="sub">зашифрованный профиль</p>
+      <p class="sub">ваше пространство в сети</p>
 
       <form action="https://www.google.com/search" method="get" autocomplete="off">
         <span class="prompt" aria-hidden="true">&gt;</span>

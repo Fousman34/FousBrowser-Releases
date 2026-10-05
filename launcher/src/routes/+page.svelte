@@ -39,6 +39,30 @@
   let working = $state('');
   /** Строка состояния: что только что произошло. */
   let notice = $state('');
+  let transfer = $state<{ profileId: string | null } | null>(null);
+  let transferPassword = $state('');
+
+  async function transferProfile() {
+    if (!transfer || working) return;
+    working = 'transfer';
+    errorText = '';
+    const secret = transferPassword;
+    transferPassword = '';
+    try {
+      const message = await api.profileTransfer(transfer.profileId, secret);
+      if (message) { notice = message; await loadProfiles(); await loadRuntimes(); }
+      transfer = null;
+    } catch (error) { errorText = api.describeError(api.toCommandError(error)); }
+    finally { working = ''; }
+  }
+
+  async function checkProxy(profile: api.ProfileView) {
+    working = profile.id;
+    errorText = '';
+    try { await api.profileCheckProxy(profile.id); notice = 'Прокси: соединение с example.com:443 установлено'; }
+    catch (error) { errorText = api.describeError(api.toCommandError(error)); }
+    finally { working = ''; }
+  }
 
   // --- запуск движков ---
   /** Состояние запуска и данных каждого профиля. */
@@ -645,6 +669,9 @@
             </button>
           {/if}
           {#if panel === 'none'}
+            <button class="ghost" onclick={() => { transferPassword = ''; transfer = { profileId: null }; }} disabled={working !== ''}>
+              импорт профиля
+            </button>
             <button class="primary" onclick={openCreate} disabled={working !== ''}>
               создать профиль
             </button>
@@ -747,6 +774,14 @@
                   <button class="ghost" onclick={() => openEdit(profile)} disabled={working !== ''}>
                     изменить
                   </button>
+                  <button class="ghost" onclick={() => { transferPassword = ''; transfer = { profileId: profile.id }; }} disabled={working !== '' || runtimeOf(profile.id)?.running || runtimeOf(profile.id)?.plaintext}>
+                    экспорт
+                  </button>
+                  {#if profile.proxy}
+                    <button class="ghost" onclick={() => checkProxy(profile)} disabled={working !== ''}>
+                      {working === profile.id ? 'проверка…' : 'проверить прокси'}
+                    </button>
+                  {/if}
                   <button
                     class="ghost"
                     onclick={() => cloneProfile(profile)}
@@ -786,6 +821,18 @@
           </ul>
         {/if}
 
+        {#if transfer}
+          <section class="confirm">
+            <h2>{transfer.profileId ? 'Экспорт профиля' : 'Импорт профиля'}</h2>
+            <p class="dim small">Введите мастер-пароль текущего хранилища. Для импорта пароли обоих хранилищ должны совпадать. Переносятся настройки и данные профиля; сохранённые браузером пароли и сеансы могут быть привязаны к Windows исходного компьютера.</p>
+            <label for="transfer-password">мастер-пароль</label>
+            <input id="transfer-password" type="password" autocomplete="current-password" bind:value={transferPassword} disabled={working !== ''} />
+            <div class="actions">
+              <button class="primary" onclick={transferProfile} disabled={working !== '' || !transferPassword}>{working === 'transfer' ? 'обработка…' : 'выбрать файл'}</button>
+              <button class="ghost" onclick={() => { transfer = null; transferPassword = ''; }} disabled={working !== ''}>отмена</button>
+            </div>
+          </section>
+        {/if}
         {#if panel !== 'none'}
           <div class="panel-slot">
             <ProfileForm
@@ -809,7 +856,7 @@
 
         {#if showUpdates}
           <div class="panel-slot">
-            <UpdatePanel onclose={() => (showUpdates = false)} />
+            <UpdatePanel onclose={() => (showUpdates = false)} oninstalled={() => void loadEngines()} />
           </div>
         {/if}
 

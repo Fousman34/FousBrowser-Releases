@@ -378,7 +378,7 @@ fn write_container(
 }
 
 /// Разворачивает контейнер: обходит зашифрованное дерево и пишет открытые файлы.
-fn read_container(
+pub(super) fn read_container(
     key: &[u8; KEY_LEN],
     profile_aad: &[u8],
     container: &Path,
@@ -428,7 +428,7 @@ fn read_container(
 }
 
 /// Шифрует один файл с диска в контейнер.
-fn store_file(
+pub(super) fn store_file(
     key: &[u8; KEY_LEN],
     profile_aad: &[u8],
     relative: &str,
@@ -509,7 +509,7 @@ fn store_entry(
 }
 
 /// Разворачивает один файл контейнера на диск. Возвращает вид и число байт.
-fn load_entry(
+pub(super) fn load_entry(
     key: &[u8; KEY_LEN],
     profile_aad: &[u8],
     relative: &str,
@@ -644,7 +644,7 @@ fn read_header<R: Read>(reader: &mut R, relative: &str) -> Result<(u8, u64)> {
         )));
     }
     let chunk_size = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
-    if chunk_size == 0 || chunk_size > MAX_CHUNK_SIZE {
+    if chunk_size != CHUNK_SIZE || chunk_size > MAX_CHUNK_SIZE {
         return Err(VaultError::Corrupted(format!(
             "недопустимый размер записи {chunk_size}: {relative}"
         )));
@@ -654,6 +654,11 @@ fn read_header<R: Read>(reader: &mut R, relative: &str) -> Result<(u8, u64)> {
         header[10], header[11], header[12], header[13], header[14], header[15], header[16],
         header[17],
     ]);
+    if length > 1024 * 1024 * 1024 * 1024 || (kind == KIND_SYMLINK && length > 32768) {
+        return Err(VaultError::Corrupted(
+            "недопустимая длина контейнера".into(),
+        ));
+    }
     Ok((kind, length))
 }
 
@@ -730,7 +735,18 @@ pub fn validate_relative(relative: &str) -> Result<()> {
                 // Обратный слэш на Unix — обычный символ имени, а на Windows —
                 // разделитель. Контейнер, собранный на Unix, на Windows вёл бы
                 // себя иначе, поэтому такие имена отвергаются сразу.
-                if text.is_empty() || text.contains('\0') || text.contains('\\') {
+                let stem = text.split('.').next().unwrap_or("").to_ascii_uppercase();
+                let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                    || (stem.len() == 4
+                        && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                        && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+                if text.is_empty()
+                    || text.contains('\0')
+                    || text.contains('\\')
+                    || text.contains(':')
+                    || text.ends_with(['.', ' '])
+                    || reserved
+                {
                     return Err(VaultError::Corrupted(format!(
                         "недопустимое имя в контейнере профиля: {relative}"
                     )));
@@ -765,6 +781,21 @@ pub fn staging_dir(profiles_root: &Path, profile_id: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_aliases_and_alternate_streams_are_rejected() {
+        for path in [
+            "Cookies:secret",
+            "NUL",
+            "a/CON.txt",
+            "COM1",
+            "a/file.",
+            "a/file ",
+        ] {
+            assert!(validate_relative(path).is_err(), "{path}");
+        }
+        assert!(validate_relative("Default/Network/Cookies").is_ok());
+    }
     use crate::vault::kdf::KdfParams;
     use crate::vault::metadata::ProfileKind;
     use crate::vault::session::Vault;

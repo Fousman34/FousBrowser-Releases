@@ -53,6 +53,11 @@ impl Default for KdfParams {
 impl KdfParams {
     /// Проверяет, что параметры вообще пригодны к использованию.
     pub fn validate(&self) -> Result<()> {
+        if self.m_cost_kib > 1024 * 1024 || self.t_cost > 10 || self.p_cost > 16 {
+            return Err(VaultError::Corrupted(
+                "параметры Argon2id превышают безопасные пределы".into(),
+            ));
+        }
         if self.algorithm != "argon2id" {
             return Err(VaultError::Corrupted(format!(
                 "неподдерживаемый алгоритм вывода ключа: {}",
@@ -207,6 +212,26 @@ pub fn ensure_acceptable(password: &str) -> Result<PasswordReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostile_kdf_parameters_are_rejected_without_allocation() {
+        for params in [
+            KdfParams {
+                m_cost_kib: u32::MAX,
+                ..KdfParams::default()
+            },
+            KdfParams {
+                p_cost: u32::MAX,
+                ..KdfParams::default()
+            },
+            KdfParams {
+                t_cost: u32::MAX,
+                ..KdfParams::default()
+            },
+        ] {
+            assert!(params.validate().is_err());
+        }
+    }
 
     /// Тестовые параметры: те же, что в продакшене, но дешёвые,
     /// чтобы тесты не занимали 256 МиБ на каждый вызов.

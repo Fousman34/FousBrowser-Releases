@@ -431,3 +431,11 @@ export function formatDuration(totalSeconds: number): string {
   const restMinutes = minutes % 60;
   return restMinutes === 0 ? `${hours} ч` : `${hours} ч ${restMinutes} мин`;
 }
+/** Native dialogs keep archive bytes out of the webview. */
+export function profileTransfer(profileId: string | null, password: string): Promise<string | null> {
+  return invoke('profile_transfer', { profileId, password });
+}
+
+export function profileCheckProxy(profileId: string): Promise<void> {
+  return invoke('profile_check_proxy', { profileId });
+}

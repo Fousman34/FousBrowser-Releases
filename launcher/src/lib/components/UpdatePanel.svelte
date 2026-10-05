@@ -13,9 +13,10 @@
 
   interface Props {
     onclose: () => void;
+    oninstalled: () => void;
   }
 
-  let { onclose }: Props = $props();
+  let { onclose, oninstalled }: Props = $props();
 
   let rows = $state<api.UpdateStateRow[]>([]);
   let checking = $state<api.UpdateChannel | ''>('');
@@ -59,6 +60,7 @@
       installing = '';
       progress = null;
       pushLine(`готово: версия ${event.payload.version}`);
+      oninstalled();
       void load();
     }).then((off) => unlisten.push(off));
 

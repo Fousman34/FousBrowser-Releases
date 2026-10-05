@@ -93,6 +93,8 @@ pub fn build(
 
     if let Some(address) = proxy_address {
         args.push(format!("--proxy-server={address}"));
+        args.push("--disable-quic".to_string());
+        args.push("--force-webrtc-ip-handling-policy=disable_non_proxied_udp".to_string());
     }
 
     // Адрес страницы идёт последним аргументом без ключа: так движок
@@ -136,7 +138,12 @@ pub fn proxy_address(proxy: &ProxyConfig) -> String {
         ProxyScheme::Http => "http",
         ProxyScheme::Https => "https",
     };
-    format!("{scheme}://{}:{}", proxy.host, proxy.port)
+    let host = if proxy.host.contains(':') && !proxy.host.starts_with('[') {
+        format!("[{}]", proxy.host)
+    } else {
+        proxy.host.clone()
+    };
+    format!("{scheme}://{host}:{}", proxy.port)
 }
 
 /// Есть ли у прокси учётные данные.

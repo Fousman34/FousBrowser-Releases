@@ -59,6 +59,8 @@ pub fn run() {
             commands::vault_attempts,
             commands::vault_save_metadata,
             commands::profile_list,
+            commands::profile_transfer,
+            commands::profile_check_proxy,
             commands::profile_create,
             commands::profile_clone,
             commands::profile_update,
