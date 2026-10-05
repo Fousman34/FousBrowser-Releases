@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Linux: системные библиотеки для Tauri
+      - name: "Linux: системные библиотеки для Tauri"
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -58,7 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Linux: системные библиотеки для Tauri
+      - name: "Linux: системные библиотеки для Tauri"
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
