@@ -271,9 +271,9 @@ mod tests {
 
     #[test]
     fn password_length_counts_characters_not_bytes() {
-        // 12 кириллических символов = 24 байта в UTF-8, но длина 12
+        // 13 кириллических символов = 26 байт в UTF-8, но длина считается в символах
         let report = check_password("пароль-двенад");
-        assert_eq!(report.length, 12);
+        assert_eq!(report.length, 13);
         assert!(report.acceptable);
     }
 

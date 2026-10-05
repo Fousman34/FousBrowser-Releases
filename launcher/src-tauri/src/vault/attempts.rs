@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn corrupted_file_does_not_lock_the_owner_out() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(AttemptsState::path_in(dir.path()), b"{ это не json").unwrap();
+        std::fs::write(AttemptsState::path_in(dir.path()), b"{ definitely not json").unwrap();
         let loaded = AttemptsState::load(dir.path(), VAULT);
         assert_eq!(loaded.failed, 0);
     }

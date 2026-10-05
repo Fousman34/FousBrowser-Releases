@@ -6,8 +6,16 @@
 //! Этап M1: хранилище (Argon2id, XChaCha20-Poly1305, метаданные, вход).
 
 mod commands;
-mod paths;
-mod vault;
+
+/// Определение пользовательских каталогов.
+pub mod paths;
+
+/// Шифрованное хранилище: ключи, метаданные, профили.
+///
+/// Модуль публичный: это ядро лаунчера, и часть его поверхности
+/// (`profiles_dir`, `temp_dir`, `random_seed`, `find`) начинает
+/// использоваться на этапах M2–M3.
+pub mod vault;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

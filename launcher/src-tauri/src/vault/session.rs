@@ -344,6 +344,18 @@ mod tests {
         Vault::create_with_params(dir, password, cheap()).unwrap()
     }
 
+    /// «Проматывает» нарастающую задержку, как если бы пользователь её переждал.
+    ///
+    /// Нужно тестам, потому что задержка проверяется ДО пароля: после пяти
+    /// неудач даже верный ввод обязан подождать. Обнуление времени последней
+    /// неудачи эквивалентно «прошло достаточно времени».
+    fn wait_out_backoff(dir: &Path) {
+        let opened = Vault::open(dir).unwrap();
+        let mut state = opened.attempts();
+        state.last_failed_unix = 0;
+        state.store(dir).unwrap();
+    }
+
     const PASSWORD: &str = "correct-horse-battery";
 
     #[test]
@@ -431,7 +443,8 @@ mod tests {
             metadata_before
         );
 
-        // и верный пароль по-прежнему работает
+        // и верный пароль по-прежнему работает — после того, как задержка истекла
+        wait_out_backoff(tmp.path());
         let unlocked = Vault::open(tmp.path()).unwrap().unlock(PASSWORD).unwrap();
         assert_eq!(unlocked.metadata().profile_count(), 0);
     }
@@ -472,10 +485,12 @@ mod tests {
         create(tmp.path(), PASSWORD).lock();
 
         // Прогоняем счётчик напрямую: 100 полных выводов ключа в тестах избыточны.
+        // Состояние соответствует ровно 100 неудачным попыткам ПОДРЯД — тогда
+        // счётчик и выставляет confirm_required.
         let opened = Vault::open(tmp.path()).unwrap();
         let mut state = opened.attempts();
-        state.failed = super::super::attempts::MAX_ATTEMPTS_BEFORE_CONFIRMATION - 1;
-        state.confirm_required = false;
+        state.failed = super::super::attempts::MAX_ATTEMPTS_BEFORE_CONFIRMATION;
+        state.confirm_required = true;
         state.store(tmp.path()).unwrap();
 
         let opened = Vault::open(tmp.path()).unwrap();
@@ -487,8 +502,33 @@ mod tests {
         // данные на месте, и после подтверждения верный пароль работает
         assert!(Vault::metadata_path(tmp.path()).is_file());
         Vault::open(tmp.path()).unwrap().confirm_continue().unwrap();
+        wait_out_backoff(tmp.path());
         let unlocked = Vault::open(tmp.path()).unwrap().unlock(PASSWORD).unwrap();
         assert_eq!(unlocked.vault_id().len(), 36);
+    }
+
+    /// Порог — ровно 100 неудач ПОДРЯД. На 99-й неудаче верный пароль ещё
+    /// проходит и сбрасывает счётчик: одна опечатка не должна приводить
+    /// к появлению экрана подтверждения.
+    #[test]
+    fn ninetynine_failures_then_correct_password_still_unlocks() {
+        let tmp = tempfile::tempdir().unwrap();
+        create(tmp.path(), PASSWORD).lock();
+
+        let opened = Vault::open(tmp.path()).unwrap();
+        let mut state = opened.attempts();
+        state.failed = super::super::attempts::MAX_ATTEMPTS_BEFORE_CONFIRMATION - 1;
+        state.confirm_required = false;
+        state.last_failed_unix = 0;
+        state.store(tmp.path()).unwrap();
+
+        let unlocked = Vault::open(tmp.path()).unwrap().unlock(PASSWORD).unwrap();
+        assert_eq!(unlocked.metadata().profile_count(), 0);
+        assert_eq!(
+            Vault::open(tmp.path()).unwrap().attempts().failed,
+            0,
+            "успешный вход сбрасывает счётчик даже на 99-й попытке"
+        );
     }
 
     #[test]

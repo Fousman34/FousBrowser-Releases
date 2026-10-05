@@ -58,9 +58,11 @@ pub fn seal(key: &[u8; KEY_LEN], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>
     let cipher = XChaCha20Poly1305::new_from_slice(key)
         .map_err(|_| VaultError::Crypto("некорректная длина ключа"))?;
     let nonce_bytes = random_bytes::<NONCE_LEN>()?;
+    let nonce = XNonce::try_from(&nonce_bytes[..])
+        .map_err(|_| VaultError::Crypto("некорректная длина nonce"))?;
     let ciphertext = cipher
         .encrypt(
-            XNonce::from_slice(&nonce_bytes),
+            &nonce,
             Payload {
                 msg: plaintext,
                 aad,
@@ -85,11 +87,13 @@ pub fn open(key: &[u8; KEY_LEN], aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>> {
         ));
     }
     let (nonce_bytes, ciphertext) = sealed.split_at(NONCE_LEN);
+    let nonce = XNonce::try_from(nonce_bytes)
+        .map_err(|_| VaultError::Corrupted("некорректная длина nonce".to_string()))?;
     let cipher = XChaCha20Poly1305::new_from_slice(key)
         .map_err(|_| VaultError::Crypto("некорректная длина ключа"))?;
     cipher
         .decrypt(
-            XNonce::from_slice(nonce_bytes),
+            &nonce,
             Payload {
                 msg: ciphertext,
                 aad,
