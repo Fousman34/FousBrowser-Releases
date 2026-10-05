@@ -83,7 +83,10 @@ jobs:
         shell: pwsh
         run: |
           $dir = "browsers/antidetect/$env:VERSION"
+          # gpg в Windows приходит из Git для Windows, то есть из MSYS: он
+          # ожидает пути с прямыми слэшами и без буквы диска в виде «D:\».
           $key = (Get-ChildItem launcher/src-tauri/resources/keys/*.asc | Select-Object -First 1).FullName
+          $key = $key -replace '\\', '/'
 
           # Отдельное хранилище ключей: проверяем ровно тот ключ, который
           # встроен в лаунчер, и никакой другой.
@@ -92,13 +95,18 @@ jobs:
 
           $gpg = (Get-Command gpg -ErrorAction SilentlyContinue).Source
           if (-not $gpg) { $gpg = 'C:\Program Files\Git\usr\bin\gpg.exe' }
+          if (-not (Test-Path $gpg)) { Write-Error "Не найден gpg: $gpg"; exit 1 }
           Write-Output "gpg: $gpg"
+          Write-Output "ключ: $key"
 
           & $gpg --batch --quiet --import $key
+          if ($LASTEXITCODE -ne 0) { Write-Error 'Не удалось импортировать публичный ключ лаунчера'; exit 1 }
+
           $status = & $gpg --batch --status-fd 1 --verify "$dir/SHA256SUMS.asc" "$dir/SHA256SUMS" 2>&1
-          $status | Select-String 'GOODSIG|VALIDSIG|BADSIG'
-          if ($LASTEXITCODE -ne 0 -or -not ($status | Select-String 'GOODSIG')) {
-            Write-Error 'Подпись списка сумм не подтверждена — публикация отменена'
+          $code = $LASTEXITCODE
+          $status | ForEach-Object { Write-Output $_ }
+          if ($code -ne 0 -or -not ($status | Select-String 'GOODSIG')) {
+            Write-Error "Подпись списка сумм не подтверждена (код $code) — публикация отменена"
             exit 1
           }
 
