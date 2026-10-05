@@ -1,0 +1,136 @@
+name: release
+
+# Релиз лаунчера по тегу версии: собираются установщики для Windows и Linux,
+# создаётся черновик релиза, к нему прикладываются контрольные суммы.
+#
+# Тег: v0.1.0 (совпадает с version в tauri.conf.json).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: тесты перед релизом
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux: системные библиотеки для Tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Кеш сборки Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher/src-tauri
+
+      - name: Тесты ядра
+        working-directory: launcher/src-tauri
+        run: cargo test --lib
+
+  bundle:
+    name: установщики (${{ matrix.os }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux: системные библиотеки для Tauri
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: launcher/package-lock.json
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Кеш сборки Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher/src-tauri
+
+      - name: Зависимости фронтенда
+        working-directory: launcher
+        run: npm ci
+
+      - name: Сборка установщиков и черновик релиза
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: launcher
+          tagName: ${{ github.ref_name }}
+          releaseName: "FousBrowser ${{ github.ref_name }}"
+          releaseBody: |
+            Установщики FousBrowser.
+
+            **Windows**: `FousBrowser_*_x64-setup.exe` (установка в профиль пользователя,
+            права администратора не нужны). SmartScreen может предупредить — нажмите
+            «Подробнее» → «Выполнить в любом случае».
+
+            **Linux**: `FousBrowser_*_amd64.AppImage` (без установки) или `.deb`.
+
+            Контрольные суммы — в файле `SHA256SUMS`.
+          releaseDraft: true
+          prerelease: false
+
+  checksums:
+    name: контрольные суммы
+    needs: bundle
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Скачать собранные файлы из черновика релиза
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "${GITHUB_REF_NAME}" --dir dist --clobber \
+            --pattern '*.exe' --pattern '*.msi' --pattern '*.AppImage' --pattern '*.deb' || true
+
+          if [ -z "$(ls -A dist 2>/dev/null)" ]; then
+            echo "Нет собранных файлов для подсчёта сумм — пропускаем шаг"
+            exit 0
+          fi
+
+          cd dist
+          sha256sum ./* > ../SHA256SUMS
+          cd ..
+          cat SHA256SUMS
+
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS --clobber

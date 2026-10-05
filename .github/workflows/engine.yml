@@ -1,0 +1,132 @@
+name: engine
+
+# Сборка релиза движка Antidetect.
+#
+# Движок не компилируется здесь: сборка Chromium занимает часы и требует
+# сотни гигабайт, что несовместимо с раннерами GitHub. Вместо этого берётся
+# готовая сборка проекта-основы (Фаза A плана движка), упаковывается
+# в собственный архив, подписывается GPG и публикуется в наших релизах.
+#
+# Запускается вручную: Actions → engine → Run workflow.
+# Секреты:
+#   GPG_PRIVATE_KEY — приватный ключ подписи (обязателен: лаунчер отказывается
+#                     ставить движок без проверенной подписи).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия движка, например 121.0.6167.85"
+        required: true
+      upstream_url:
+        description: "Ссылка на архив сборки-основы (zip)"
+        required: true
+      asset_name:
+        description: "Имя нашего архива в релизе"
+        required: true
+        default: "antidetect-linux-x64.zip"
+      notes:
+        description: "Что вошло в сборку"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    name: упаковка и подпись движка
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Проверить наличие ключа подписи
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "${GPG_PRIVATE_KEY}" ]; then
+            echo "::error::Секрет GPG_PRIVATE_KEY не задан. Без подписи релиз движка выпускать нельзя:"
+            echo "::error::лаунчер обязан проверять GPG-подпись перед установкой."
+            exit 1
+          fi
+
+      - name: Скачать сборку-основу
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          curl --fail --location --retry 3 --output work/upstream.zip "${{ inputs.upstream_url }}"
+          ls -l work/upstream.zip
+
+      - name: Распаковать и подготовить архив
+        run: |
+          set -euo pipefail
+          cd work
+          unzip -q upstream.zip -d unpacked
+          # Внутри может быть один каталог верхнего уровня — переносим его
+          # содержимое наверх, чтобы у лаунчера была предсказуемая раскладка.
+          entries=$(ls -1 unpacked | wc -l)
+          if [ "$entries" = "1" ] && [ -d "unpacked/$(ls -1 unpacked)" ]; then
+            mv "unpacked/$(ls -1 unpacked)" payload
+          else
+            mv unpacked payload
+          fi
+          zip -qr "../${{ inputs.asset_name }}" payload
+          cd ..
+          ls -l "${{ inputs.asset_name }}"
+
+      - name: Контрольные суммы
+        run: |
+          set -euo pipefail
+          sha256sum "${{ inputs.asset_name }}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Подпись GPG
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
+          # Подписывается именно список сумм: он покрывает все файлы релиза.
+          gpg --batch --yes --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS
+          gpg --verify SHA256SUMS.asc SHA256SUMS
+          ls -l SHA256SUMS SHA256SUMS.asc
+
+      - name: Проверить, что подпись сделана нашим ключом
+        run: |
+          set -euo pipefail
+          key_file=$(ls launcher/src-tauri/resources/keys/*.asc 2>/dev/null | head -n 1 || true)
+          if [ -z "${key_file}" ]; then
+            echo "::error::В launcher/src-tauri/resources/keys/ нет публичного ключа — лаунчер не сможет проверить подпись."
+            exit 1
+          fi
+
+          expected=$(gpg --show-keys --with-colons "${key_file}" | awk -F: '/^fpr:/ {print $10; exit}')
+          actual=$(gpg --with-colons --verify SHA256SUMS.asc SHA256SUMS 2>/dev/null \
+            | awk -F: '/^VALIDSIG/ {print ($12 != "" ? $12 : $2); exit}')
+
+          echo "Публичный ключ в репозитории: ${key_file}"
+          echo "Отпечаток в репозитории: ${expected}"
+          echo "Отпечаток подписи:       ${actual}"
+
+          if [ "${expected}" != "${actual}" ]; then
+            echo "::error::Релиз подписан не тем ключом, который встроен в лаунчер: установка будет отвергнута."
+            exit 1
+          fi
+
+      - name: Публикация релиза движка
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="antidetect-v${{ inputs.version }}"
+          gh release view "${tag}" >/dev/null 2>&1 || gh release create "${tag}" \
+            --title "Antidetect engine ${{ inputs.version }}" \
+            --notes "${{ inputs.notes }}" \
+            --target "${GITHUB_SHA}"
+          gh release upload "${tag}" \
+            "${{ inputs.asset_name }}" \
+            SHA256SUMS \
+            SHA256SUMS.asc \
+            --clobber
+          gh release view "${tag}"

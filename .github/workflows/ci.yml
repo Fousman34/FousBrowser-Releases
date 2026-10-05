@@ -1,0 +1,77 @@
+name: ci
+
+# Проверки на каждый push и pull request: ядро, типы фронтенда, сборка.
+# Пакеты здесь не собираются — этим занимается release.yml по тегу версии.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: проверки (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux: системные библиотеки для Tauri
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: launcher/package-lock.json
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Кеш сборки Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher/src-tauri
+
+      - name: Зависимости фронтенда
+        working-directory: launcher
+        run: npm ci
+
+      - name: Форматирование Rust
+        working-directory: launcher/src-tauri
+        run: cargo fmt --check
+
+      - name: Тесты ядра
+        working-directory: launcher/src-tauri
+        run: cargo test --lib
+
+      - name: Предупреждения Clippy
+        working-directory: launcher/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Типы фронтенда
+        working-directory: launcher
+        run: npm run check
+
+      - name: Сборка фронтенда
+        working-directory: launcher
+        run: npm run build
