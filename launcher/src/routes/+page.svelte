@@ -2,9 +2,12 @@
   import { onMount } from 'svelte';
   import TerminalText from '$lib/components/TerminalText.svelte';
   import TypedHint from '$lib/components/TypedHint.svelte';
+  import ProfileForm from '$lib/components/ProfileForm.svelte';
   import * as api from '$lib/api';
 
   type Phase = 'boot' | 'welcome' | 'unlock' | 'ready';
+  /** Какая панель раскрыта под списком профилей. */
+  type Panel = 'none' | 'create' | 'edit';
 
   let phase = $state<Phase>('boot');
   let status = $state<api.VaultStatus | null>(null);
@@ -23,6 +26,17 @@
   let reportHandle: ReturnType<typeof setTimeout> | undefined;
 
   let passwordInput = $state<HTMLInputElement | undefined>();
+
+  // --- профили ---
+  let profiles = $state<api.ProfileView[]>([]);
+  let panel = $state<Panel>('none');
+  let editing = $state<api.ProfileView | null>(null);
+  /** Профиль, удаление которого ждёт подтверждения. */
+  let deleting = $state<api.ProfileView | null>(null);
+  /** Идентификатор профиля, с которым сейчас идёт работа. */
+  let working = $state('');
+  /** Строка состояния: что только что произошло. */
+  let notice = $state('');
 
   const MIN = api.MIN_PASSWORD_LENGTH;
 
@@ -105,6 +119,7 @@
       confirmation = '';
       report = null;
       phase = 'ready';
+      await loadProfiles();
     } catch (error) {
       errorText = api.describeError(api.toCommandError(error));
     } finally {
@@ -121,6 +136,7 @@
       outcome = await api.vaultUnlock(password);
       password = '';
       phase = 'ready';
+      await loadProfiles();
     } catch (error) {
       const commandError = api.toCommandError(error);
       errorText = api.describeError(commandError);
@@ -156,7 +172,111 @@
     report = null;
     errorText = '';
     hintFor = '';
+    // Список профилей живёт только в памяти разблокированной сессии.
+    profiles = [];
+    panel = 'none';
+    editing = null;
+    deleting = null;
+    working = '';
+    notice = '';
     await refresh();
+  }
+
+  // --- профили -------------------------------------------------------------
+
+  async function loadProfiles() {
+    try {
+      profiles = await api.profileList();
+    } catch (error) {
+      errorText = api.describeError(api.toCommandError(error));
+    }
+  }
+
+  function openCreate() {
+    editing = null;
+    deleting = null;
+    notice = '';
+    errorText = '';
+    panel = 'create';
+  }
+
+  function openEdit(profile: api.ProfileView) {
+    editing = profile;
+    deleting = null;
+    notice = '';
+    errorText = '';
+    panel = 'edit';
+  }
+
+  function closePanel() {
+    panel = 'none';
+    editing = null;
+  }
+
+  async function submitProfile(draft: api.ProfileDraft) {
+    working = editing?.id ?? 'new';
+    errorText = '';
+
+    try {
+      if (editing) {
+        // Правка идёт двумя шагами: поля профиля и отдельно прокси,
+        // потому что пароль прокси ядро хранит само.
+        await api.profileUpdate(editing.id, draft);
+        const withProxy = await api.profileSetProxy(editing.id, draft.proxy);
+        notice = `профиль «${withProxy.name}» обновлён`;
+      } else {
+        const created = await api.profileCreate(draft);
+        notice = `профиль «${created.name}» создан`;
+      }
+      closePanel();
+      await loadProfiles();
+      outcome = outcome ? { ...outcome, profiles: profiles.length } : outcome;
+    } catch (error) {
+      errorText = api.describeError(api.toCommandError(error));
+    } finally {
+      working = '';
+    }
+  }
+
+  async function cloneProfile(profile: api.ProfileView) {
+    working = profile.id;
+    errorText = '';
+    notice = '';
+    try {
+      const clone = await api.profileClone(profile.id);
+      notice = `создана копия «${clone.name}» с новым зерном отпечатка`;
+      await loadProfiles();
+      outcome = outcome ? { ...outcome, profiles: profiles.length } : outcome;
+    } catch (error) {
+      errorText = api.describeError(api.toCommandError(error));
+    } finally {
+      working = '';
+    }
+  }
+
+  function askDelete(profile: api.ProfileView) {
+    deleting = profile;
+    notice = '';
+    errorText = '';
+  }
+
+  async function confirmDelete() {
+    if (!deleting) return;
+    const target = deleting;
+    working = target.id;
+    errorText = '';
+
+    try {
+      await api.profileDelete(target.id);
+      deleting = null;
+      notice = `профиль «${target.name}» удалён, данные стёрты`;
+      await loadProfiles();
+      outcome = outcome ? { ...outcome, profiles: profiles.length } : outcome;
+    } catch (error) {
+      errorText = api.describeError(api.toCommandError(error));
+    } finally {
+      working = '';
+    }
   }
 
   function shorten(value: string): string {
@@ -174,7 +294,7 @@
     {/if}
   </header>
 
-  <main>
+  <main class:wide={phase === 'ready'}>
     {#if phase === 'boot'}
       <section class="screen">
         <p class="dim"><TerminalText text="чтение хранилища…" speed={14} /></p>
@@ -341,34 +461,123 @@
         </div>
       </section>
     {:else if phase === 'ready'}
-      <section class="screen panel">
-        <h1><TerminalText text="ДОСТУП РАЗРЕШЁН" speed={16} cursor={false} /></h1>
+      <section class="screen workspace">
+        <header class="head">
+          <h1><TerminalText text="ПРОФИЛИ" speed={14} cursor={false} /></h1>
+          <span class="faint small">{profiles.length} шт.</span>
+          <span class="spacer"></span>
+          {#if panel === 'none'}
+            <button class="primary" onclick={openCreate} disabled={working !== ''}>
+              создать профиль
+            </button>
+          {/if}
+        </header>
 
-        <dl class="kv">
-          <dt class="faint">идентификатор</dt>
-          <dd>{outcome?.vault_id.slice(0, 8) ?? '—'}</dd>
-          <dt class="faint">профилей</dt>
-          <dd>{outcome?.profiles ?? 0}</dd>
-          <dt class="faint">каталог</dt>
-          <dd class="dim">{status?.vault_path ?? '—'}</dd>
-        </dl>
+        {#if notice}
+          <p class="ok small notice-line"><TerminalText text={notice} speed={12} /></p>
+        {/if}
+
+        {#if errorText}
+          <p class="danger small">[x] {errorText}</p>
+        {/if}
+
+        {#if profiles.length === 0}
+          <p class="dim empty">
+            <TerminalText
+              text="Хранилище пусто: предустановленных профилей нет. Создайте первый."
+              speed={9}
+            />
+          </p>
+        {:else}
+          <ul class="profiles">
+            {#each profiles as profile (profile.id)}
+              <li class:pending={working === profile.id}>
+                <div class="line">
+                  <span class="name">{profile.name}</span>
+                  <span class="kind" class:anti={profile.kind === 'antidetect'}>
+                    {api.PROFILE_KIND_LABELS[profile.kind]}
+                  </span>
+                  <span class="faint small">
+                    {profile.proxy
+                      ? `${api.PROXY_SCHEME_LABELS[profile.proxy.scheme]} ${profile.proxy.host}:${profile.proxy.port}`
+                      : 'без прокси'}
+                  </span>
+                  <span class="spacer"></span>
+                  <span class="faint tiny">зерно {profile.seed.toString(16).padStart(8, '0')}</span>
+                </div>
+
+                {#if profile.note}
+                  <div class="faint small note">{profile.note}</div>
+                {/if}
+
+                <div class="actions">
+                  <button class="ghost" onclick={() => openEdit(profile)} disabled={working !== ''}>
+                    изменить
+                  </button>
+                  <button
+                    class="ghost"
+                    onclick={() => cloneProfile(profile)}
+                    disabled={working !== ''}
+                  >
+                    клонировать
+                  </button>
+                  <button
+                    class="ghost danger"
+                    onclick={() => askDelete(profile)}
+                    disabled={working !== ''}
+                  >
+                    удалить
+                  </button>
+                </div>
+
+                {#if deleting?.id === profile.id}
+                  <div class="confirm">
+                    <p class="warn small">
+                      <TerminalText
+                        text="данные профиля будут стёрты безвозвратно. восстановить их нельзя"
+                        speed={10}
+                      />
+                    </p>
+                    <div class="actions">
+                      <button class="danger" onclick={confirmDelete} disabled={working !== ''}>
+                        {working === profile.id ? 'стирание…' : 'стереть безвозвратно'}
+                      </button>
+                      <button class="ghost" onclick={() => (deleting = null)} disabled={working !== ''}>
+                        отмена
+                      </button>
+                    </div>
+                  </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+
+        {#if panel !== 'none'}
+          <div class="panel-slot">
+            <ProfileForm
+              mode={panel === 'edit' ? 'edit' : 'create'}
+              profile={editing}
+              busy={working !== ''}
+              onsubmit={submitProfile}
+              oncancel={closePanel}
+            />
+          </div>
+        {/if}
+
+        <footer class="actions tail">
+          <button onclick={lockVault}>заблокировать хранилище</button>
+          <span class="spacer"></span>
+          <span class="faint tiny">{outcome?.vault_id.slice(0, 8) ?? ''}</span>
+        </footer>
 
         {#if outcome && outcome.warnings.length > 0}
-          <div class="notice">
+          <div class="warn-block">
             {#each outcome.warnings as warning (warning)}
               <p class="warn small">[!] {warning}</p>
             {/each}
           </div>
         {/if}
-
-        <p class="dim small">
-          Шифрование работает: ключ выведен из пароля через Argon2id и находится только
-          в памяти процесса. Управление профилями появится на следующем этапе.
-        </p>
-
-        <div class="actions">
-          <button onclick={lockVault}>заблокировать</button>
-        </div>
       </section>
     {/if}
   </main>
@@ -413,6 +622,110 @@
     justify-content: center;
     overflow: auto;
     padding: 28px 16px;
+  }
+
+  /* Список профилей растёт вниз: центрировать его по вертикали не нужно. */
+  main.wide {
+    align-items: flex-start;
+  }
+
+  .workspace {
+    width: 100%;
+    max-width: 820px;
+  }
+
+  .head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .head h1 {
+    font-size: 1.05em;
+  }
+
+  .notice-line {
+    margin-top: 12px;
+  }
+
+  .empty {
+    margin-top: 18px;
+    font-size: 0.95em;
+  }
+
+  .profiles {
+    margin: 16px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .profiles li {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .profiles li.pending {
+    opacity: 0.55;
+  }
+
+  .line {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .name {
+    color: var(--fg);
+    letter-spacing: 0.02em;
+  }
+
+  .kind {
+    padding: 1px 7px;
+    border: 1px solid var(--line);
+    color: var(--fg-dim);
+    font-size: 0.82em;
+    letter-spacing: 0.08em;
+  }
+
+  .kind.anti {
+    border-color: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .note {
+    margin-top: 6px;
+  }
+
+  .confirm {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--danger);
+    background: var(--bg-inset);
+  }
+
+  .panel-slot {
+    margin-top: 22px;
+  }
+
+  .tail {
+    margin-top: 26px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line-soft);
+  }
+
+  .warn-block {
+    margin-top: 16px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--warn);
+    background: var(--bg-inset);
+  }
+
+  .tiny {
+    font-size: 0.85em;
   }
 
   .panel {
@@ -497,22 +810,6 @@
     display: flex;
     gap: 10px;
     margin-top: 20px;
-  }
-
-  .kv {
-    display: grid;
-    grid-template-columns: 130px 1fr;
-    gap: 6px 14px;
-    margin: 16px 0 0;
-  }
-
-  .kv dt {
-    font-size: 0.9em;
-  }
-
-  .kv dd {
-    margin: 0;
-    overflow-wrap: anywhere;
   }
 
   .small {

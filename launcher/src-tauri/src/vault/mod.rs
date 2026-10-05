@@ -17,6 +17,11 @@
 //! в сессии пользователя, от клавиатурных шпионов и от того, что во время
 //! работы браузера профиль расшифрован. Подробности — в `docs/THREAT-MODEL.md`.
 //!
+//! # Операции над профилями
+//!
+//! Создание, клонирование, правка и удаление профилей живут в [`profiles`]:
+//! они работают с теми же метаданными и сохраняют их на диск атомарно.
+//!
 //! # Чего здесь принципиально нет
 //!
 //! Автоудаления данных по числу неудачных попыток ввода пароля. Такого кода
@@ -28,6 +33,7 @@ pub mod error;
 pub mod header;
 pub mod kdf;
 pub mod metadata;
+pub mod profiles;
 pub mod session;
 
 // Короткие имена для часто используемых типов.
@@ -38,6 +44,7 @@ pub use kdf::{check_password, KdfParams, PasswordReport};
 pub use metadata::{
     OrphanPolicy, ProfileKind, ProfileMeta, ProxyConfig, ProxyScheme, Settings, VaultMetadata,
 };
+pub use profiles::{validate_name, wipe_dir};
 pub use session::{UnlockedVault, Vault};
 
 use std::time::{SystemTime, UNIX_EPOCH};

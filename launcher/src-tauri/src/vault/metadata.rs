@@ -36,6 +36,23 @@ impl ProfileKind {
     }
 }
 
+/// Разбор типа профиля из строки интерфейса.
+///
+/// Регистр не важен: фронтенд может присылать как `normal`, так и `Normal`.
+impl std::str::FromStr for ProfileKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "normal" => Ok(Self::Normal),
+            "antidetect" => Ok(Self::Antidetect),
+            other => Err(format!(
+                "неизвестный тип профиля: {other} (ожидается normal или antidetect)"
+            )),
+        }
+    }
+}
+
 /// Схема прокси.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -58,6 +75,22 @@ impl ProxyScheme {
         match self {
             Self::Socks5 => 1080,
             Self::Http | Self::Https => 8080,
+        }
+    }
+}
+
+/// Разбор схемы прокси из строки интерфейса.
+impl std::str::FromStr for ProxyScheme {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "socks5" | "socks" => Ok(Self::Socks5),
+            "http" => Ok(Self::Http),
+            "https" => Ok(Self::Https),
+            other => Err(format!(
+                "неизвестная схема прокси: {other} (ожидается socks5, http или https)"
+            )),
         }
     }
 }

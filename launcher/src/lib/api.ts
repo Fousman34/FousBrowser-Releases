@@ -49,6 +49,7 @@ export interface CommandError {
     | 'already_exists'
     | 'wrong_password'
     | 'weak_password'
+    | 'invalid'
     | 'corrupted'
     | 'locked'
     | 'backoff'
@@ -61,6 +62,72 @@ export interface CommandError {
   seconds?: number | null;
   attempts?: number | null;
 }
+
+export type ProfileKind = 'normal' | 'antidetect';
+
+export type ProxyScheme = 'socks5' | 'http' | 'https';
+
+/** Настройки прокси в том виде, в каком их отдаёт ядро: без пароля. */
+export interface ProxyView {
+  scheme: ProxyScheme;
+  host: string;
+  port: number;
+  username: string | null;
+  /** Задан ли пароль. Сам пароль остаётся в зашифрованных метаданных. */
+  has_password: boolean;
+}
+
+/** Профиль для интерфейса. */
+export interface ProfileView {
+  id: string;
+  name: string;
+  kind: ProfileKind;
+  /** Зерно отпечатка: у каждого профиля своё. */
+  seed: number;
+  created_unix: number;
+  engine_version: string | null;
+  note: string | null;
+  proxy: ProxyView | null;
+}
+
+/** Настройки прокси, отправляемые в ядро. */
+export interface ProxyInput {
+  scheme: ProxyScheme;
+  host: string;
+  port: number;
+  username?: string | null;
+  /** `null` — сохранить прежний пароль, пустая строка — убрать его. */
+  password?: string | null;
+}
+
+export interface ProfileDraft {
+  name: string;
+  kind: ProfileKind;
+  proxy: ProxyInput | null;
+  note: string | null;
+}
+
+export const PROFILE_KIND_LABELS: Record<ProfileKind, string> = {
+  normal: 'Normal',
+  antidetect: 'Antidetect',
+};
+
+export const PROFILE_KIND_HINTS: Record<ProfileKind, string> = {
+  normal: 'стоковый Chromium без патчей — повседневный сёрфинг',
+  antidetect: 'Chromium с подменой отпечатка — там, где важна анонимность',
+};
+
+export const PROXY_SCHEME_LABELS: Record<ProxyScheme, string> = {
+  socks5: 'SOCKS5',
+  http: 'HTTP',
+  https: 'HTTPS',
+};
+
+export const PROXY_DEFAULT_PORTS: Record<ProxyScheme, number> = {
+  socks5: 1080,
+  http: 8080,
+  https: 8080,
+};
 
 export const MIN_PASSWORD_LENGTH = 12;
 
@@ -92,6 +159,51 @@ export function vaultAttempts(): Promise<AttemptsState> {
   return invoke('vault_attempts');
 }
 
+// --- профили ---------------------------------------------------------------
+
+export function profileList(): Promise<ProfileView[]> {
+  return invoke('profile_list');
+}
+
+export function profileCreate(draft: ProfileDraft): Promise<ProfileView> {
+  return invoke('profile_create', {
+    name: draft.name,
+    kind: draft.kind,
+    proxy: draft.proxy,
+    note: draft.note,
+  });
+}
+
+/** Клонирование: те же настройки, новое зерно отпечатка. */
+export function profileClone(profileId: string, name?: string | null): Promise<ProfileView> {
+  return invoke('profile_clone', { profileId, name: name ?? null });
+}
+
+export function profileUpdate(
+  profileId: string,
+  draft: Pick<ProfileDraft, 'name' | 'kind' | 'note'>
+): Promise<ProfileView> {
+  return invoke('profile_update', {
+    profileId,
+    name: draft.name,
+    kind: draft.kind,
+    note: draft.note,
+  });
+}
+
+/** `null` снимает привязку прокси. */
+export function profileSetProxy(
+  profileId: string,
+  proxy: ProxyInput | null
+): Promise<ProfileView> {
+  return invoke('profile_set_proxy', { profileId, proxy });
+}
+
+/** Удаляет профиль и безвозвратно стирает его данные. Возвращает число оставшихся. */
+export function profileDelete(profileId: string): Promise<number> {
+  return invoke('profile_delete', { profileId });
+}
+
 /**
  * Приводит любое исключение к `CommandError`.
  *
@@ -121,7 +233,8 @@ export function describeError(error: CommandError): string {
     case 'already_exists':
       return 'хранилище уже существует';
     case 'not_found':
-      return 'хранилище не найдено';
+      // Ядро само называет объект: «профиль …», «хранилище не найдено: …».
+      return error.message;
     case 'backoff':
       return `слишком много попыток: подождите ${formatDuration(error.seconds ?? 0)}`;
     case 'confirmation_required':
@@ -130,6 +243,8 @@ export function describeError(error: CommandError): string {
       return `хранилище повреждено: ${error.message}`;
     case 'locked':
       return 'хранилище заблокировано';
+    case 'invalid':
+      return error.message;
     default:
       return error.message;
   }

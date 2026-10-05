@@ -28,6 +28,9 @@ pub enum VaultError {
     #[error("хранилище заблокировано")]
     Locked,
 
+    #[error("{0}")]
+    Invalid(String),
+
     #[error("ввод временно недоступен: подождите {seconds} с")]
     Backoff { seconds: u64 },
 
