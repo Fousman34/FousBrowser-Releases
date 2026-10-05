@@ -175,7 +175,7 @@ pub fn check_password(password: &str) -> PasswordReport {
     if !has_symbol {
         recommendations.push("добавьте спецсимволы (!?@#%…)".to_string());
     }
-    if length >= MIN_PASSWORD_LEN && length < 16 {
+    if (MIN_PASSWORD_LEN..16).contains(&length) {
         recommendations.push("длина от 16 символов заметно надёжнее".to_string());
     }
 
